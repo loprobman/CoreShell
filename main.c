@@ -189,7 +189,7 @@ int main()
     /* Setup signal handler for Ctrl+C */
     signal(SIGINT, signal_handler);
     
-    printf("SShell v1.0 - Simple Linux Shell\n");
+    printf("CoreShell v1.0 - Simple Linux Shell\n");
     printf("Type 'exit' to quit\n\n");
     
     while(1) 
@@ -197,7 +197,7 @@ int main()
         interrupted = 0;
 
         /* Print USER */
-        printf("%s@SShell> ",getenv("USER"));
+        printf("%s@CoreShell> ",getenv("USER"));
         /* flush stream to ensure prompt is printed before input */
         fflush(stdout); 
         input = read_input();
@@ -211,6 +211,6 @@ int main()
         free(input);
     }
     
-    printf("Exiting SShell\n");
+    printf("Exiting CoreShell\n");
     return 0;
 }
