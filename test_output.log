@@ -1,0 +1,69 @@
+Running CoreShell test suite...
+./test_runner
+ Setting up fixtures in /tmp/coreshell_test_Srmexo
+
+ CoreShell Test Runner
+ ════════════════════════════════════════
+
+ [PASS] help: no args lists all commands                         exit=0
+ [PASS] help: valid command name shows usage                     exit=0
+ [PASS] help: unknown command returns error                      exit=1
+ [PASS] exit: --help prints usage line                           exit=0
+ [PASS] exit: bare call terminates child with status 0           exit=0
+ [PASS] cd: change to /tmp succeeds                              exit=0
+ [PASS] cd: nonexistent path returns error                       exit=1
+ [PASS] cd: no args navigates to HOME                            exit=0
+ [PASS] cd: --help prints usage line                             exit=0
+ [PASS] pwd: prints an absolute path                             exit=0
+ [PASS] pwd: --help prints usage line                            exit=0
+ [PASS] echo: no args prints empty line                          exit=0
+ [PASS] echo: multiple strings printed space-separated           exit=0
+ [PASS] echo: -n suppresses trailing newline                     exit=0
+ [PASS] echo: -e interprets \t as tab                            exit=0
+ [PASS] echo: --help prints usage line                           exit=0
+ [PASS] ls: lists fixture directory                              exit=0
+ [PASS] ls: -a shows dot entries                                 exit=0
+ [PASS] ls: -l shows long format with test.txt                   exit=0
+ [PASS] ls: -la combines long + all flags                        exit=0
+ [PASS] ls: nonexistent path returns error                       exit=1
+ [PASS] ls: --help prints usage line                             exit=0
+ [PASS] stat: prints file size for existing file                 exit=0
+ [PASS] stat: nonexistent file returns error                     exit=1
+ [PASS] stat: --help prints usage line                           exit=0
+ [PASS] cat: prints full content of test.txt                     exit=0
+ [PASS] cat: empty file succeeds with no output                  exit=0
+ [PASS] cat: nonexistent file returns error                      exit=1
+ [PASS] cat: --help prints usage line                            exit=0
+ [PASS] head: default 10 lines includes first line               exit=0
+ [PASS] head: -n 2 returns only first two lines                  exit=0
+ [PASS] head: -n 1 returns exactly the first line                exit=0
+ [PASS] head: nonexistent file returns error                     exit=1
+ [PASS] head: --help prints usage line                           exit=0
+ [PASS] tail: default output includes last line                  exit=0
+ [PASS] tail: -n 2 includes last two lines                       exit=0
+ [PASS] tail: -n 1 returns only last line                        exit=0
+ [PASS] tail: nonexistent file returns error                     exit=1
+ [PASS] tail: --help prints usage line                           exit=0
+ [PASS] cp: copies existing file to new destination              exit=0
+ [PASS] cp: nonexistent source returns error                     exit=1
+ [PASS] cp: --help prints usage line                             exit=0
+ [PASS] mv: renames/moves source file to destination             exit=0
+ [PASS] mv: nonexistent source returns error                     exit=1
+ [PASS] mv: --help prints usage line                             exit=0
+ [PASS] rm: removes existing file                                exit=0
+ [PASS] rm: nonexistent file returns error                       exit=1
+ [PASS] rm: --help prints usage line                             exit=0
+ [PASS] mkdir: creates a new directory                           exit=0
+ [PASS] mkdir: existing directory returns error                  exit=1
+ [PASS] mkdir: --help prints usage line                          exit=0
+ [PASS] rmdir: removes an empty directory                        exit=0
+ [PASS] rmdir: nonexistent directory returns error               exit=1
+ [PASS] rmdir: --help prints usage line                          exit=0
+ [PASS] touch: creates a new file                                exit=0
+ [PASS] touch: updates timestamp of existing file                exit=0
+ [PASS] touch: --help prints usage line                          exit=0
+
+ Results: 57 passed / 0 failed / 57 total  (100%%)
+
+ Report written to: test_report.md
+

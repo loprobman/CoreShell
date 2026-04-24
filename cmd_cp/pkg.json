@@ -1,0 +1,7 @@
+{
+  "name": "cp",
+  "version": "1.0.0",
+  "description": "copy a file or directory",
+  "long_description": "Copy SOURCE to DEST. Use -r to copy directories recursively.",
+  "docs": "docs/cp.md"
+}

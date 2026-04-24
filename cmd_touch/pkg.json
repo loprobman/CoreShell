@@ -1,0 +1,7 @@
+{
+  "name": "touch",
+  "version": "1.0.0",
+  "description": "create a file or update its timestamp",
+  "long_description": "Update the access and modification timestamps of each file. Create the file if it does not exist, unless -c is specified.",
+  "docs": "docs/touch.md"
+}

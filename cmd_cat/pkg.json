@@ -1,0 +1,7 @@
+{
+  "name": "cat",
+  "version": "1.0.0",
+  "description": "concatenate files and print to stdout",
+  "long_description": "Concatenate one or more files and write them to standard output.",
+  "docs": "docs/cat.md"
+}

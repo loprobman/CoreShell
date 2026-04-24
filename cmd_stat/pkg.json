@@ -1,0 +1,7 @@
+{
+  "name": "stat",
+  "version": "1.0.0",
+  "description": "display file status",
+  "long_description": "Show size, mode, link count, owner ids, and timestamps for one or more files.",
+  "docs": "docs/stat.md"
+}
