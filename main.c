@@ -122,24 +122,15 @@ static void execute_command(char *args[])
 
 /* ── main REPL ─────────────────────────────────────────────────────────── */
 
-int main(int argc, char *argv[])
+int main(void)
 {
+    char  *input;
+    char  *args[MAX_ARGS];
+
     signal(SIGINT, signal_handler);
 
     /* Populate the command registry */
     register_all_builtin_commands();
-
-    /* Non-interactive mode: command supplied on the command line.
-       argv[1..] is already tokenised by the OS — no parse_command() needed. */
-    if (argc > 1)
-    {
-        execute_command(argv + 1);
-        return 0;
-    }
-
-    /* Interactive REPL mode */
-    char  *input;
-    char  *args[MAX_ARGS];
 
     printf("CoreShell v2.0 - Simple Linux Shell\n");
     printf("Type 'help' for available commands or 'exit' to quit.\n\n");

@@ -116,7 +116,7 @@ void pwd_print_usage(FILE *out)
     arg_print_syntax(out, argtable, "\n");
     fprintf(out, "\nPrint the absolute path of the current working directory.\n");
     fprintf(out, "\nOptions:\n");
-    arg_print_glossary(out, argtable, "  %-22s %s\n");
+    arg_print_glossary(out, argtable, "  %%-22s %s\n");
     fprintf(out, "\n");
 
     arg_freetable(argtable, 4);

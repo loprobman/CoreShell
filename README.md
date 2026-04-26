@@ -397,48 +397,5 @@ cmd_rmdir/          # rmdir built-in
 cmd_touch/          # touch built-in
 ```
 
-Each `cmd_*/` directory contains:
-
-```
-cmd_<name>/
-  cmd_<name>.c    # implementation: run(), print_usage(), spec, register()
-  cmd_<name>.h    # public header
-  pkg.json        # package metadata
-  docs/
-    <name>.md     # reference documentation
+Each `cmd_*/` module follows the same pattern:
 `build_*_argtable()` → `*_run()` → `*_print_usage()` → `cmd_*_spec` → `register_*_command()`.
-
-Every module also ships two packaging artifacts:
-
-```
-cmd_<name>/
-  pkg.json       # package metadata (name, version, description, docs pointer)
-  docs/<name>.md # reference documentation generated from --help output
-```
-
----
-
-## Packaging Metadata
-
-Each command module is self-describing via a `pkg.json` file:
-
-```json
-{
-  "name": "ls",
-  "version": "1.0.0",
-  "description": "list directory contents",
-  "long_description": "List information about entries in the specified directory (default: current directory).",
-  "docs": "docs/ls.md"
-}
-```
-
-The fields map directly to the command's `cmd_spec_t` struct:
-
-| `pkg.json` field | Source |
-|---|---|
-| `name` | `cmd_spec_t.name` |
-| `description` | `cmd_spec_t.summary` |
-| `long_description` | `cmd_spec_t.long_help` |
-| `docs` | path to generated `docs/<name>.md` |
-
-The `docs/<name>.md` file is generated from the live `--help` output of each command and contains the usage line, options table, and examples. It is the canonical reference documentation for each built-in.
