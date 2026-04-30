@@ -19,15 +19,46 @@ make clean  # Remove all compiled objects, binaries, and test report
 ## Testing
 
 ```bash
-make test                   # Build test runner and execute all test cases
+make test                   # Build CoreShell + test runner, then execute all test cases
 ./test_runner               # Run already-built test binary directly
-make test 2>&1 | tee test_output.log   # Run and save terminal output to a log file
 ```
 
 `make test` compiles a standalone C test runner (`test_runner`) that links directly
 against the built-in command objects, forks an isolated child per test case, and
-captures stdout/stderr via pipes. On completion it prints a colour-coded terminal
-summary and writes `test_report.md` to the project root.
+captures stdout/stderr via pipes.  On completion it produces:
+
+| Output file | Description |
+|---|---|
+| `test_report.md` | Markdown table with pass/fail status, exit codes, and stdout snippets for every test |
+| `test_output.log` | Plain-text log (no ANSI colour) suitable for CI or file review |
+
+Both files are regenerated on every run and removed by `make clean`.
+
+### Test suites (113 test cases)
+
+| Suite | Cases | What is tested |
+|---|---|---|
+| `test_help` | 3 | help command listing, per-command usage, unknown command error |
+| `test_exit` | 2 | `--help` output, clean exit status |
+| `test_cd` | 4 | valid path, nonexistent path, no-args ($HOME), `--help` |
+| `test_pwd` | 2 | prints `/`, `--help` |
+| `test_echo` | 5 | no args, multi-string, `-n`, `-e` escapes, `--help` |
+| `test_ls` | 6 | directory listing, `-a`, `-l`, `-la`, error, `--help` |
+| `test_stat` | 3 | file size output, error, `--help` |
+| `test_cat` | 4 | full content, empty file, error, `--help` |
+| `test_head` | 5 | default 10 lines, `-n 2`, `-n 1`, error, `--help` |
+| `test_tail` | 5 | default 10 lines, `-n 2`, `-n 1`, error, `--help` |
+| `test_cp` | 3 | file copy, error, `--help` |
+| `test_mv` | 3 | rename, error, `--help` |
+| `test_rm` | 3 | remove, error, `--help` |
+| `test_mkdir` | 3 | create, existing dir error, `--help` |
+| `test_rmdir` | 3 | remove empty, error, `--help` |
+| `test_touch` | 3 | create, update timestamp, `--help` |
+| `test_cmd_spec_metadata` | 16 | all 16 commands have name, summary, long_help, run, print_usage set |
+| `test_pkg_json` | 16 | all 16 `pkg.json` files contain required fields |
+| `test_docs_md` | 16 | all 16 `docs/<name>.md` files contain `## Usage` and `## Options` |
+| `test_multicall_dispatch` | 6 | Mode 2 (argv[1]), unknown command error, Mode 1 (symlink) |
+| `test_pwd_help_format` | 2 | `--logical` and `--physical` appear in help (format bug regression) |
 
 ## Debugging
 
@@ -349,11 +380,36 @@ help flag, e.g. `grep --help`.
 
 ---
 
-## External Commands
+## Multicall Dispatch
 
-Any command not matched by the built-in registry is executed via `fork()` +
-`execvp()`, with the parent waiting via `waitpid()`. Standard Unix utilities
-(`grep`, `wc`, `sort`, etc.) work normally.
+CoreSell supports **BusyBox-style multicall** operation. The single binary can be
+invoked in three modes:
+
+| Mode | Invocation | Behaviour |
+|---|---|---|
+| **Symlink** | `./ls -la` (symlink to `CoreShell`) | `argv[0]` basename is used as the command name |
+| **Explicit** | `./CoreShell ls -la` | `argv[1]` is used as the command name; `argv` is shifted |
+| **Interactive** | `./CoreShell` | Falls through to the REPL |
+
+The dispatch pattern in `main()` (from the slides):
+
+```c
+const char *cmd = (argc > 1) ? argv[1] : argv0_basename(argv[0]);
+int run_argc = (argc > 1) ? argc - 1 : argc;
+char **run_argv = (argc > 1) ? &argv[1] : argv;
+
+const cmd_spec_t *spec = find_command(cmd);
+if (!spec) return unknown_command(cmd);
+return spec->run(run_argc, run_argv);
+```
+
+To create symlinks for each command:
+
+```bash
+ln -sf CoreShell ls
+ln -sf CoreShell echo
+# etc.
+```
 
 ---
 
@@ -361,7 +417,8 @@ Any command not matched by the built-in registry is executed via `fork()` +
 
 - **Input**: `fgets()` into a heap buffer; EOF triggers a clean exit
 - **Parsing**: `strtok()` splits on space, tab, and newline
-- **Dispatch**: registry lookup → `spec->run(argc, argv)`; unknown → `fork` + `execvp`
+- **Dispatch**: multicall check → registry lookup → `spec->run(argc, argv)`; unknown → error message
+- **No fork/exec**: all commands are built-in; no external process spawning
 - **Signals**: `SIGINT` (Ctrl-C) sets a flag and re-displays the prompt; it does not exit
 - **Argument parsing**: vendored [argtable3](argtable3/) library used by every built-in
 
@@ -397,5 +454,44 @@ cmd_rmdir/          # rmdir built-in
 cmd_touch/          # touch built-in
 ```
 
-Each `cmd_*/` module follows the same pattern:
-`build_*_argtable()` → `*_run()` → `*_print_usage()` → `cmd_*_spec` → `register_*_command()`.
+Each `cmd_*/` directory contains:
+
+```
+cmd_<name>/
+  cmd_<name>.c    # implementation: run(), print_usage(), spec, register()
+  cmd_<name>.h    # public header
+  pkg.json        # package metadata
+  docs/
+    <name>.md     # reference documentation
+```
+
+Code pattern per module: `build_*_argtable()` → `*_run()` → `*_print_usage()` → `cmd_*_spec` → `register_*_command()`.
+
+---
+
+## Packaging Metadata
+
+Each command module ships a `pkg.json` file that makes it self-describing:
+
+```json
+{
+  "name": "ls",
+  "version": "1.0.0",
+  "description": "list directory contents",
+  "long_description": "List information about entries in the specified directory (default: current directory).",
+  "docs": "docs/ls.md"
+}
+```
+
+The fields map directly to the command's `cmd_spec_t` struct:
+
+| `pkg.json` field | Source |
+|---|---|
+| `name` | `cmd_spec_t.name` |
+| `description` | `cmd_spec_t.summary` |
+| `long_description` | `cmd_spec_t.long_help` |
+| `docs` | path to generated `docs/<name>.md` |
+
+The `docs/<name>.md` file is generated from the live `--help` output of each command
+and contains the usage line, options table, and examples. It is the canonical reference
+documentation for each built-in.

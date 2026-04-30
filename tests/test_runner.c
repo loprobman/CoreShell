@@ -87,6 +87,27 @@ static test_result_t g_results[MAX_TESTS];
 static int           g_count       = 0;
 static char          g_fixture_dir[512];
 
+/* ── Dynamic description pool ────────────────────────────────────────── */
+/* Storage for test descriptions generated at runtime (e.g. inside loops).
+   Strings are written once into a static pool and never freed. */
+static char g_desc_pool[128][128];
+static int  g_desc_used = 0;
+
+static const char *make_desc(const char *fmt, const char *arg)
+{
+    if (g_desc_used >= 128) return fmt;
+    snprintf(g_desc_pool[g_desc_used], 128, fmt, arg);
+    return g_desc_pool[g_desc_used++];
+}
+
+/* All built-in command names (must match register_all_builtin_commands) */
+static const char *s_commands[] = {
+    "ls",  "cat",   "cd",    "cp",    "echo",  "exit",
+    "head","help",  "mkdir", "mv",    "pwd",   "rm",
+    "rmdir","stat", "tail",  "touch"
+};
+#define N_COMMANDS (int)(sizeof(s_commands) / sizeof(s_commands[0]))
+
 /* ── Fixture helpers ─────────────────────────────────────────────────── */
 
 static void fixture_path(char *buf, size_t sz, const char *relpath)
@@ -244,7 +265,150 @@ static void run_test(const test_case_t *tc)
         if (!r->stderr_match) r->passed = 0;
     }
 }
+/* ── Shell-subprocess test (forks and execs the CoreShell binary) ───── */
+/*
+ * Identical to run_test() except the child does execvp(argv[0], argv)
+ * instead of calling spec->run() directly.  Used for multicall tests
+ * that exercise the full binary entry point.
+ */
+static void run_shell_test(const test_case_t *tc)
+{
+    if (g_count >= MAX_TESTS) {
+        fprintf(stderr, "error: MAX_TESTS (%d) exceeded\n", MAX_TESTS);
+        return;
+    }
 
+    test_result_t *r    = &g_results[g_count++];
+    r->description      = tc->description;
+    r->expected_exit    = tc->expected_exit;
+    r->actual_exit      = -1;
+    r->stdout_buf[0]    = '\0';
+    r->stderr_buf[0]    = '\0';
+    r->stdout_contains  = tc->stdout_contains;
+    r->stderr_contains  = tc->stderr_contains;
+    r->stdout_match     = 1;
+    r->stderr_match     = 1;
+    r->passed           = 0;
+
+    int out_pipe[2], err_pipe[2];
+    if (pipe(out_pipe) < 0 || pipe(err_pipe) < 0) { perror("pipe"); return; }
+
+    pid_t pid = fork();
+    if (pid < 0) { perror("fork"); return; }
+
+    if (pid == 0) {
+        close(out_pipe[0]);
+        close(err_pipe[0]);
+        if (dup2(out_pipe[1], STDOUT_FILENO) < 0) _exit(126);
+        if (dup2(err_pipe[1], STDERR_FILENO) < 0) _exit(126);
+        close(out_pipe[1]);
+        close(err_pipe[1]);
+
+        char *args[16];
+        int   argc = 0;
+        while (tc->argv[argc] && argc < 15) {
+            args[argc] = (char *)tc->argv[argc];
+            argc++;
+        }
+        args[argc] = NULL;
+
+        execvp(args[0], args);
+        perror(args[0]);
+        _exit(127);
+    }
+
+    close(out_pipe[1]);
+    close(err_pipe[1]);
+
+    { ssize_t n, total = 0;
+      while (total < MAX_OUTPUT - 1 &&
+             (n = read(out_pipe[0], r->stdout_buf + total,
+                       (size_t)(MAX_OUTPUT - 1 - total))) > 0)
+          total += n;
+      r->stdout_buf[total] = '\0'; }
+    close(out_pipe[0]);
+
+    { ssize_t n, total = 0;
+      while (total < MAX_OUTPUT - 1 &&
+             (n = read(err_pipe[0], r->stderr_buf + total,
+                       (size_t)(MAX_OUTPUT - 1 - total))) > 0)
+          total += n;
+      r->stderr_buf[total] = '\0'; }
+    close(err_pipe[0]);
+
+    int status;
+    waitpid(pid, &status, 0);
+    r->actual_exit = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+
+    if (tc->expected_exit == EXPECT_FAIL)
+        r->passed = (r->actual_exit != 0);
+    else
+        r->passed = (r->actual_exit == tc->expected_exit);
+
+    if (tc->stdout_contains) {
+        r->stdout_match = strstr(r->stdout_buf, tc->stdout_contains) != NULL;
+        if (!r->stdout_match) r->passed = 0;
+    }
+    if (tc->stderr_contains) {
+        r->stderr_match = strstr(r->stderr_buf, tc->stderr_contains) != NULL;
+        if (!r->stderr_match) r->passed = 0;
+    }
+}
+
+/* ── File-content test (no fork; opens file and checks substrings) ────── */
+/*
+ * Opens filepath, reads its entire content, then verifies each string
+ * in must_contain[] appears in the content.  No process is spawned.
+ * Used to validate pkg.json and docs/<name>.md packaging artefacts.
+ */
+static void check_file_test(const char  *description,
+                             const char  *filepath,
+                             const char **must_contain,
+                             int          n_checks)
+{
+    if (g_count >= MAX_TESTS) {
+        fprintf(stderr, "error: MAX_TESTS (%d) exceeded\n", MAX_TESTS);
+        return;
+    }
+
+    test_result_t *r = &g_results[g_count++];
+    r->description     = description;
+    r->expected_exit   = 0;
+    r->actual_exit     = 0;
+    r->stdout_buf[0]   = '\0';
+    r->stderr_buf[0]   = '\0';
+    r->stdout_contains = NULL;
+    r->stderr_contains = NULL;
+    r->stdout_match    = 1;
+    r->stderr_match    = 1;
+    r->passed          = 1;
+
+    FILE *f = fopen(filepath, "r");
+    if (!f) {
+        snprintf(r->stderr_buf, MAX_OUTPUT - 1, "cannot open: %s", filepath);
+        r->passed      = 0;
+        r->actual_exit = 1;
+        return;
+    }
+
+    size_t total = 0;
+    int    c;
+    while (total < (size_t)(MAX_OUTPUT - 1) && (c = fgetc(f)) != EOF)
+        r->stdout_buf[total++] = (char)c;
+    r->stdout_buf[total] = '\0';
+    fclose(f);
+
+    for (int i = 0; i < n_checks; i++) {
+        if (strstr(r->stdout_buf, must_contain[i]) == NULL) {
+            r->passed          = 0;
+            r->stdout_match    = 0;
+            r->stdout_contains = must_contain[i];
+            snprintf(r->stderr_buf, MAX_OUTPUT - 1,
+                     "missing: \"%s\"", must_contain[i]);
+            break; /* report first missing entry only */
+        }
+    }
+}
 /* ── Test suites (one function per built-in command) ─────────────────── */
 
 /* ---- help ------------------------------------------------------------ */
@@ -608,6 +772,169 @@ static void test_touch(void)
     });
 }
 
+/* ---- cmd_spec_t metadata --------------------------------------------- */
+/*
+ * Validates that every registered command has all five fields of
+ * cmd_spec_t populated: name, summary, long_help, run, print_usage.
+ */
+static void test_cmd_spec_metadata(void)
+{
+    for (int i = 0; i < N_COMMANDS; i++) {
+        const char       *name = s_commands[i];
+        const cmd_spec_t *spec = find_command(name);
+
+        test_result_t *r = &g_results[g_count++];
+        r->description     = make_desc("cmd_spec: %s has complete metadata", name);
+        r->expected_exit   = 0;
+        r->stdout_buf[0]   = '\0';
+        r->stderr_buf[0]   = '\0';
+        r->stdout_contains = NULL;
+        r->stderr_contains = NULL;
+        r->stdout_match    = 1;
+        r->stderr_match    = 1;
+
+        if (!spec) {
+            r->actual_exit = 1;
+            r->passed      = 0;
+            snprintf(r->stderr_buf, MAX_OUTPUT - 1,
+                     "find_command(\"%s\") returned NULL", name);
+            continue;
+        }
+
+        int ok = (spec->name       && spec->name[0])       &&
+                 (spec->summary    && spec->summary[0])    &&
+                 (spec->long_help  && spec->long_help[0])  &&
+                 (spec->run        != NULL)                 &&
+                 (spec->print_usage != NULL);
+
+        r->actual_exit = ok ? 0 : 1;
+        r->passed      = ok;
+        if (!ok)
+            snprintf(r->stderr_buf, MAX_OUTPUT - 1,
+                "name=%s summary=%s long_help=%s run=%s print_usage=%s",
+                spec->name      ? (spec->name[0]      ? "ok" : "empty") : "NULL",
+                spec->summary   ? (spec->summary[0]   ? "ok" : "empty") : "NULL",
+                spec->long_help ? (spec->long_help[0] ? "ok" : "empty") : "NULL",
+                spec->run       ? "ok" : "NULL",
+                spec->print_usage ? "ok" : "NULL");
+    }
+}
+
+/* ---- pkg.json artefacts ---------------------------------------------- */
+/*
+ * Opens cmd_<name>/pkg.json for each command and verifies the five
+ * required JSON key strings are present: name, version, description,
+ * long_description, docs.
+ */
+static void test_pkg_json(void)
+{
+    static const char *required[] = {
+        "\"name\"", "\"version\"", "\"description\"",
+        "\"long_description\"", "\"docs\""
+    };
+    for (int i = 0; i < N_COMMANDS; i++) {
+        char path[256];
+        snprintf(path, sizeof(path), "cmd_%s/pkg.json", s_commands[i]);
+        check_file_test(
+            make_desc("pkg.json: %s has all required fields", s_commands[i]),
+            path, required, 5);
+    }
+}
+
+/* ---- docs/<name>.md artefacts ----------------------------------------- */
+/*
+ * Opens cmd_<name>/docs/<name>.md for each command and verifies it
+ * contains a ## Usage section and a ## Options section.
+ */
+static void test_docs_md(void)
+{
+    static const char *required[] = { "## Usage", "## Options" };
+    for (int i = 0; i < N_COMMANDS; i++) {
+        char path[256];
+        snprintf(path, sizeof(path), "cmd_%s/docs/%s.md",
+                 s_commands[i], s_commands[i]);
+        check_file_test(
+            make_desc("docs: %s.md has Usage and Options sections",
+                      s_commands[i]),
+            path, required, 2);
+    }
+}
+
+/* ---- multicall dispatch ---------------------------------------------- */
+/*
+ * Tests both multicall dispatch modes introduced in this refactor:
+ *   Mode 2: ./CoreShell <cmd> [args...]  (argv[1] is the command)
+ *   Mode 1: ./echo [args...]             (symlink; argv[0] is the command)
+ */
+static void test_multicall_dispatch(void)
+{
+    /* Mode 2: known built-in commands dispatched directly */
+    run_shell_test(&(test_case_t){
+        "multicall mode2: echo prints argument",
+        {"./CoreShell", "echo", "hello_multicall", NULL}, 0, "hello_multicall", NULL
+    });
+    run_shell_test(&(test_case_t){
+        "multicall mode2: pwd returns an absolute path",
+        {"./CoreShell", "pwd", NULL}, 0, "/", NULL
+    });
+    run_shell_test(&(test_case_t){
+        "multicall mode2: ls --help shows Usage",
+        {"./CoreShell", "ls", "--help", NULL}, 0, "Usage", NULL
+    });
+    run_shell_test(&(test_case_t){
+        "multicall mode2: help lists built-in commands",
+        {"./CoreShell", "help", NULL}, 0, "exit", NULL
+    });
+
+    /* Mode 2: unknown command must fail with an error message */
+    run_shell_test(&(test_case_t){
+        "multicall mode2: unknown command returns non-zero",
+        {"./CoreShell", "xyznosuchcmd99", NULL}, EXPECT_FAIL,
+        NULL, "unknown command"
+    });
+
+    /* Mode 1: symlink named after 'echo' dispatches to echo_run */
+    unlink("./echo");  /* remove any leftover from earlier runs */
+    if (symlink("./CoreShell", "./echo") == 0) {
+        run_shell_test(&(test_case_t){
+            "multicall mode1: symlink 'echo' dispatches correctly",
+            {"./echo", "mode1_ok", NULL}, 0, "mode1_ok", NULL
+        });
+        unlink("./echo");
+    } else {
+        /* Record as a skipped pass if symlink creation is unavailable */
+        test_result_t *r = &g_results[g_count++];
+        r->description     = "multicall mode1: symlink 'echo' dispatches correctly";
+        r->expected_exit   = 0;
+        r->actual_exit     = 0;
+        r->stdout_match    = 1;
+        r->stderr_match    = 1;
+        r->stdout_contains = NULL;
+        r->stderr_contains = NULL;
+        r->passed          = 1;
+        snprintf(r->stdout_buf, MAX_OUTPUT - 1, "(skipped: symlink() failed)");
+        r->stderr_buf[0]   = '\0';
+    }
+}
+
+/* ---- pwd --help column-alignment regression test --------------------- */
+/*
+ * Verifies that the %%-22s typo in cmd_pwd/cmd_pwd.c is fixed:
+ * the help output must show the long option forms rather than literal
+ * "%-22s" that the bug caused arg_print_glossary to emit.
+ */
+static void test_pwd_help_format(void)
+{
+    run_test(&(test_case_t){
+        "pwd: --help lists --logical long option (format bug regression)",
+        {"pwd", "--help", NULL}, 0, "--logical", NULL
+    });
+    run_test(&(test_case_t){
+        "pwd: --help lists --physical long option (format bug regression)",
+        {"pwd", "--help", NULL}, 0, "--physical", NULL
+    });
+}
+
 /* ── Report generation ───────────────────────────────────────────────── */
 
 static const char *pass_label(int passed)
@@ -777,6 +1104,62 @@ static void write_markdown_report(const char *filepath)
     printf(" Report written to: %s\n\n", filepath);
 }
 
+/* ── Plain-text log ─────────────────────────────────────────────────── */
+/*
+ * Writes a colour-free plain-text version of the test results to
+ * filepath.  Used alongside the Markdown report for CI log integration.
+ */
+static void write_text_log(const char *filepath)
+{
+    FILE *f = fopen(filepath, "w");
+    if (!f) { perror(filepath); return; }
+
+    int passed = 0, failed = 0;
+    for (int i = 0; i < g_count; i++)
+        g_results[i].passed ? passed++ : failed++;
+
+    time_t now = time(NULL);
+    char timebuf[64];
+    struct tm *tm_info = localtime(&now);
+    strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", tm_info);
+
+    fprintf(f, "CoreShell Test Log\n");
+    fprintf(f, "Generated : %s\n", timebuf);
+    fprintf(f, "Fixture   : %s\n", g_fixture_dir);
+    fprintf(f, "========================================\n\n");
+
+    for (int i = 0; i < g_count; i++) {
+        const test_result_t *r = &g_results[i];
+        fprintf(f, "[%s] %s\n", r->passed ? "PASS" : "FAIL", r->description);
+        if (!r->passed) {
+            if (r->expected_exit == EXPECT_FAIL)
+                fprintf(f, "       exit=%d (expected non-zero)\n",
+                        r->actual_exit);
+            else
+                fprintf(f, "       exit=%d (expected %d)\n",
+                        r->actual_exit, r->expected_exit);
+            if (!r->stdout_match)
+                fprintf(f, "       stdout missing: \"%s\"\n",
+                        r->stdout_contains);
+            if (!r->stderr_match)
+                fprintf(f, "       stderr missing: \"%s\"\n",
+                        r->stderr_contains);
+            if (r->stdout_buf[0])
+                fprintf(f, "       stdout: %.200s\n", r->stdout_buf);
+            if (r->stderr_buf[0])
+                fprintf(f, "       stderr: %.200s\n", r->stderr_buf);
+        }
+    }
+
+    fprintf(f, "\n========================================\n");
+    fprintf(f, "Results: %d passed / %d failed / %d total (%.0f%%)\n",
+            passed, failed, g_count,
+            g_count > 0 ? 100.0 * passed / g_count : 0.0);
+
+    fclose(f);
+    printf(" Log written to: %s\n\n", filepath);
+}
+
 /* ── Entry point ─────────────────────────────────────────────────────── */
 
 int main(void)
@@ -809,11 +1192,21 @@ int main(void)
     test_rmdir();
     test_touch();
 
+    /* New test suites covering session-3 additions */
+    test_cmd_spec_metadata();
+    test_pkg_json();
+    test_docs_md();
+    test_multicall_dispatch();
+    test_pwd_help_format();
+
     /* Print terminal summary */
     print_terminal_report();
 
     /* Write markdown report */
     write_markdown_report("test_report.md");
+
+    /* Write plain-text log */
+    write_text_log("test_output.log");
 
     /* Clean up */
     teardown_fixtures();

@@ -5,10 +5,34 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <errno.h>
+#include <libgen.h>
 #include "cmd_registry.h"
 
 #define BUFFER_SIZE 1024
 #define MAX_ARGS    64
+
+/* ── multicall helpers ─────────────────────────────────────────────────── */
+
+/* Return the basename of path without modifying it.
+   Uses a static buffer — suitable only for one call at a time. */
+static const char *argv0_basename(const char *path)
+{
+    /* basename(3) may modify its argument; work on a copy */
+    static char buf[256];
+    strncpy(buf, path, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    /* basename() takes a file path string and returns only the last component of that path 
+      — everything after the final /. */
+    return basename(buf); 
+}
+
+/* Called in multicall mode when no command matches. */
+static int unknown_command(const char *cmd)
+{
+    fprintf(stderr, "CoreShell: unknown command '%s'\n", cmd);
+    fprintf(stderr, "Run 'CoreShell' with no arguments to enter the interactive shell.\n");
+    return EXIT_FAILURE;
+}
 
 /* ── signal handling ───────────────────────────────────────────────────── */
 
@@ -80,57 +104,72 @@ static char *read_input(void)
 
 /* ── command dispatch ──────────────────────────────────────────────────── */
 
-static void execute_command(char *args[])
+/* Dispatch a built-in command by name.  Returns the command's exit code,
+   or 1 if the command is not found. */
+static int dispatch_builtin(int argc, char *argv[])
 {
-    if (args[0] == NULL)
-    {
-        return;
-    }
+    if (argv[0] == NULL)
+        return 0;
 
-    /* Count arguments (argv[0] is the command name) */
-    int argc = 0;
-    while (args[argc] != NULL)
-    {
-        argc++;
-    }
-
-    /* Look up in the built-in registry first */
-    const cmd_spec_t *spec = find_command(args[0]);
+    const cmd_spec_t *spec = find_command(argv[0]);
     if (spec != NULL)
-    {
-        spec->run(argc, args);
-        return;
-    }
+        return spec->run(argc, argv);
 
-    /* Fall back to fork+exec for external programs */
-    pid_t pid = fork();
-    if (pid == 0)
-    {
-        execvp(args[0], args);
-        perror(args[0]);
-        exit(EXIT_FAILURE);
-    }
-    else if (pid > 0)
-    {
-        waitpid(pid, NULL, 0);
-    }
-    else
-    {
-        perror("fork");
-    }
+    fprintf(stderr, "CoreShell: '%s': command not found\n", argv[0]);
+    return 1;
 }
 
-/* ── main REPL ─────────────────────────────────────────────────────────── */
+/* ── main ──────────────────────────────────────────────────────────────── */
 
-int main(void)
+int main(int argc, char *argv[])
 {
-    char  *input;
-    char  *args[MAX_ARGS];
-
     signal(SIGINT, signal_handler);
 
     /* Populate the command registry */
     register_all_builtin_commands();
+
+    /* ── Multicall dispatch ────────────────────────────────────────────── *
+     * Mode 1: invoked via a symlink named after a command, e.g. ./ls -la  *
+     *   argv[0] basename is a known command → dispatch directly, no REPL. *
+     * Mode 2: invoked as ./CoreShell <cmd> [args...]                      *
+     *   argv[1] is a known command → shift argv and dispatch directly.    *
+     * Mode 3: ./CoreShell (no args, or argv[0] basename is "CoreShell")   *
+     *   → fall through to the interactive REPL (Read-Eval-Print-Loop).    */
+
+    const char *self = argv0_basename(argv[0]);
+
+    /* Mode 1: symlink invocation *self != CoreShell */
+    if (strcmp(self, "CoreShell") != 0)
+    {
+        /* argv[0] is already the command name; pass full argc/argv */
+        const cmd_spec_t *spec = find_command(self);
+        if (!spec)
+            return unknown_command(self);
+        return spec->run(argc, argv); /* Run Command */
+    }
+
+    /* Mode 2: ./CoreShell <cmd> [args...] */
+    if (argc > 1)
+    {
+        const char *cmd = argv[1];
+        /* Only dispatch if argv[1] matches a known built-in;
+           otherwise fall through to the REPL so the user can still
+           run an interactive session with an initial command typed. */
+        const cmd_spec_t *spec = find_command(cmd);
+        if (spec)
+        {
+            /* Shift: run_argv[0] = cmd name, run_argc excludes program name */
+            int run_argc = argc - 1;
+            char **run_argv = &argv[1];
+            return spec->run(run_argc, run_argv);
+        }
+        /* Unknown command in multicall mode → error, no REPL */
+        return unknown_command(cmd);
+    }
+
+    /* ── Mode 3: Interactive REPL ──────────────────────────────────────── */
+    char  *input;
+    char  *args[MAX_ARGS];
 
     printf("CoreShell v2.0 - Simple Linux Shell\n");
     printf("Type 'help' for available commands or 'exit' to quit.\n\n");
@@ -157,8 +196,9 @@ int main(void)
             continue;
         }
 
-        parse_command(input, args);
-        execute_command(args);
+        int nargs = parse_command(input, args);
+        if (nargs > 0)
+            dispatch_builtin(nargs, args);
         free(input);
     }
 

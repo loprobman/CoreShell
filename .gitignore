@@ -32,9 +32,12 @@
 *.exe
 *.out
 *.app
+CoreShell
+test_runner
 *.i*86
 *.x86_64
 *.hex
+
 
 # Debug files
 *.dSYM/

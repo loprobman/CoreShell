@@ -1,5 +1,5 @@
 CC     = gcc
-CFLAGS = -Wall -Wextra -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700
+CFLAGS = -Wall -Wextra -g -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700
 
 INCLUDES = \
     -I. \
@@ -59,7 +59,7 @@ debug: CFLAGS += -g -O0
 debug: clean $(TARGET)
 
 clean:
-	rm -f $(OBJ) $(TARGET) $(TEST_OBJ) $(TEST_BIN) test_report.md
+	rm -f $(OBJ) $(TARGET) $(TEST_OBJ) $(TEST_BIN) test_report.md test_output.log
 
 # ── Test runner ──────────────────────────────────────────────────────── #
 LIB_OBJ  = $(filter-out main.o, $(OBJ))
@@ -67,7 +67,7 @@ TEST_SRC = tests/test_runner.c
 TEST_OBJ = tests/test_runner.o
 TEST_BIN = test_runner
 
-test: $(TEST_BIN)
+test: $(TARGET) $(TEST_BIN)
 	@printf "Running CoreShell test suite...\n"
 	./$(TEST_BIN)
 

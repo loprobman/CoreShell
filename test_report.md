@@ -1,14 +1,14 @@
 # CoreShell Test Report
 
-Generated: 2026-04-23 18:24:18  
-Fixture dir: `/tmp/coreshell_test_UcqZlJ`
+Generated: 2026-04-30 14:03:34  
+Fixture dir: `/tmp/coreshell_test_Pj2Zs2`
 
 ## Summary
 
 | Metric  | Value |
 |---------|-------|
-| Total   | 57    |
-| Passed  | 57    |
+| Total   | 113    |
+| Passed  | 113    |
 | Failed  | 0    |
 | Rate    | 100.0% |
 
@@ -16,60 +16,116 @@ Fixture dir: `/tmp/coreshell_test_UcqZlJ`
 
 | # | Result | Description | Expected exit | Actual exit | stdout snippet |
 |---|--------|-------------|---------------|-------------|----------------|
-| 1 | **PASS** | help: no args lists all commands | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 2 | **PASS** | help: valid command name shows usage | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 3 | **PASS** | help: unknown command returns error | `non-zero` | `1` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 4 | **PASS** | exit: --help prints usage line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 5 | **PASS** | exit: bare call terminates child with status 0 | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 6 | **PASS** | cd: change to /tmp succeeds | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 7 | **PASS** | cd: nonexistent path returns error | `non-zero` | `1` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 8 | **PASS** | cd: no args navigates to HOME | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 9 | **PASS** | cd: --help prints usage line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 10 | **PASS** | pwd: prints an absolute path | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 11 | **PASS** | pwd: --help prints usage line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 12 | **PASS** | echo: no args prints empty line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 13 | **PASS** | echo: multiple strings printed space-separated | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 14 | **PASS** | echo: -n suppresses trailing newline | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 15 | **PASS** | echo: -e interprets \t as tab | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 16 | **PASS** | echo: --help prints usage line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 17 | **PASS** | ls: lists fixture directory | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 18 | **PASS** | ls: -a shows dot entries | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 19 | **PASS** | ls: -l shows long format with test.txt | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 20 | **PASS** | ls: -la combines long + all flags | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 21 | **PASS** | ls: nonexistent path returns error | `non-zero` | `1` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 22 | **PASS** | ls: --help prints usage line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 23 | **PASS** | stat: prints file size for existing file | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 24 | **PASS** | stat: nonexistent file returns error | `non-zero` | `1` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 25 | **PASS** | stat: --help prints usage line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 26 | **PASS** | cat: prints full content of test.txt | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 27 | **PASS** | cat: empty file succeeds with no output | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 28 | **PASS** | cat: nonexistent file returns error | `non-zero` | `1` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 29 | **PASS** | cat: --help prints usage line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 30 | **PASS** | head: default 10 lines includes first line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 31 | **PASS** | head: -n 2 returns only first two lines | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 32 | **PASS** | head: -n 1 returns exactly the first line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 33 | **PASS** | head: nonexistent file returns error | `non-zero` | `1` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 34 | **PASS** | head: --help prints usage line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 35 | **PASS** | tail: default output includes last line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 36 | **PASS** | tail: -n 2 includes last two lines | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 37 | **PASS** | tail: -n 1 returns only last line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 38 | **PASS** | tail: nonexistent file returns error | `non-zero` | `1` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 39 | **PASS** | tail: --help prints usage line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 40 | **PASS** | cp: copies existing file to new destination | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 41 | **PASS** | cp: nonexistent source returns error | `non-zero` | `1` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 42 | **PASS** | cp: --help prints usage line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 43 | **PASS** | mv: renames/moves source file to destination | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 44 | **PASS** | mv: nonexistent source returns error | `non-zero` | `1` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 45 | **PASS** | mv: --help prints usage line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 46 | **PASS** | rm: removes existing file | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 47 | **PASS** | rm: nonexistent file returns error | `non-zero` | `1` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 48 | **PASS** | rm: --help prints usage line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 49 | **PASS** | mkdir: creates a new directory | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 50 | **PASS** | mkdir: existing directory returns error | `non-zero` | `1` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 51 | **PASS** | mkdir: --help prints usage line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 52 | **PASS** | rmdir: removes an empty directory | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 53 | **PASS** | rmdir: nonexistent directory returns error | `non-zero` | `1` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 54 | **PASS** | rmdir: --help prints usage line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 55 | **PASS** | touch: creates a new file | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 56 | **PASS** | touch: updates timestamp of existing file | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
-| 57 | **PASS** | touch: --help prints usage line | `0` | `0` | ` Setting up fixtures in /tmp/coreshell_test_UcqZlJ` |
+| 1 | **PASS** | help: no args lists all commands | `0` | `0` | `[0m` |
+| 2 | **PASS** | help: valid command name shows usage | `0` | `0` | `[0m` |
+| 3 | **PASS** | help: unknown command returns error | `non-zero` | `1` | `[0m` |
+| 4 | **PASS** | exit: --help prints usage line | `0` | `0` | `[0m` |
+| 5 | **PASS** | exit: bare call terminates child with status 0 | `0` | `0` | `[0m` |
+| 6 | **PASS** | cd: change to /tmp succeeds | `0` | `0` | `[0m` |
+| 7 | **PASS** | cd: nonexistent path returns error | `non-zero` | `1` | `[0m` |
+| 8 | **PASS** | cd: no args navigates to HOME | `0` | `0` | `[0m` |
+| 9 | **PASS** | cd: --help prints usage line | `0` | `0` | `[0m` |
+| 10 | **PASS** | pwd: prints an absolute path | `0` | `0` | `[0m/home/rmlr/Development/CoreShell/CoreShell` |
+| 11 | **PASS** | pwd: --help prints usage line | `0` | `0` | `[0m` |
+| 12 | **PASS** | echo: no args prints empty line | `0` | `0` | `[0m` |
+| 13 | **PASS** | echo: multiple strings printed space-separated | `0` | `0` | `[0mhello world` |
+| 14 | **PASS** | echo: -n suppresses trailing newline | `0` | `0` | `[0mnolf` |
+| 15 | **PASS** | echo: -e interprets \t as tab | `0` | `0` | `[0mcol1	col2` |
+| 16 | **PASS** | echo: --help prints usage line | `0` | `0` | `[0m` |
+| 17 | **PASS** | ls: lists fixture directory | `0` | `0` | `[0mempty.txt  test.txt  subdir  ` |
+| 18 | **PASS** | ls: -a shows dot entries | `0` | `0` | `[0mempty.txt  test.txt  .  ..  subdir  ` |
+| 19 | **PASS** | ls: -l shows long format with test.txt | `0` | `0` | `[0m-rw-rw-r--   1 rmlr     rmlr            0 Apr 30 14:03 empty.txt` |
+| 20 | **PASS** | ls: -la combines long + all flags | `0` | `0` | `[0m-rw-rw-r--   1 rmlr     rmlr            0 Apr 30 14:03 empty.txt` |
+| 21 | **PASS** | ls: nonexistent path returns error | `non-zero` | `1` | `[0m` |
+| 22 | **PASS** | ls: --help prints usage line | `0` | `0` | `[0m` |
+| 23 | **PASS** | stat: prints file size for existing file | `0` | `0` | `[0m  File: /tmp/coreshell_test_Pj2Zs2/test.txt` |
+| 24 | **PASS** | stat: nonexistent file returns error | `non-zero` | `1` | `[0m` |
+| 25 | **PASS** | stat: --help prints usage line | `0` | `0` | `[0m` |
+| 26 | **PASS** | cat: prints full content of test.txt | `0` | `0` | `[0mHello World` |
+| 27 | **PASS** | cat: empty file succeeds with no output | `0` | `0` | `[0m` |
+| 28 | **PASS** | cat: nonexistent file returns error | `non-zero` | `1` | `[0m` |
+| 29 | **PASS** | cat: --help prints usage line | `0` | `0` | `[0m` |
+| 30 | **PASS** | head: default 10 lines includes first line | `0` | `0` | `[0mHello World` |
+| 31 | **PASS** | head: -n 2 returns only first two lines | `0` | `0` | `[0mHello World` |
+| 32 | **PASS** | head: -n 1 returns exactly the first line | `0` | `0` | `[0mHello World` |
+| 33 | **PASS** | head: nonexistent file returns error | `non-zero` | `1` | `[0m` |
+| 34 | **PASS** | head: --help prints usage line | `0` | `0` | `[0m` |
+| 35 | **PASS** | tail: default output includes last line | `0` | `0` | `[0mHello World` |
+| 36 | **PASS** | tail: -n 2 includes last two lines | `0` | `0` | `[0mLine 4` |
+| 37 | **PASS** | tail: -n 1 returns only last line | `0` | `0` | `[0mLine 5` |
+| 38 | **PASS** | tail: nonexistent file returns error | `non-zero` | `1` | `[0m` |
+| 39 | **PASS** | tail: --help prints usage line | `0` | `0` | `[0m` |
+| 40 | **PASS** | cp: copies existing file to new destination | `0` | `0` | `[0m` |
+| 41 | **PASS** | cp: nonexistent source returns error | `non-zero` | `1` | `[0m` |
+| 42 | **PASS** | cp: --help prints usage line | `0` | `0` | `[0m` |
+| 43 | **PASS** | mv: renames/moves source file to destination | `0` | `0` | `[0m` |
+| 44 | **PASS** | mv: nonexistent source returns error | `non-zero` | `1` | `[0m` |
+| 45 | **PASS** | mv: --help prints usage line | `0` | `0` | `[0m` |
+| 46 | **PASS** | rm: removes existing file | `0` | `0` | `[0m` |
+| 47 | **PASS** | rm: nonexistent file returns error | `non-zero` | `1` | `[0m` |
+| 48 | **PASS** | rm: --help prints usage line | `0` | `0` | `[0m` |
+| 49 | **PASS** | mkdir: creates a new directory | `0` | `0` | `[0m` |
+| 50 | **PASS** | mkdir: existing directory returns error | `non-zero` | `1` | `[0m` |
+| 51 | **PASS** | mkdir: --help prints usage line | `0` | `0` | `[0m` |
+| 52 | **PASS** | rmdir: removes an empty directory | `0` | `0` | `[0m` |
+| 53 | **PASS** | rmdir: nonexistent directory returns error | `non-zero` | `1` | `[0m` |
+| 54 | **PASS** | rmdir: --help prints usage line | `0` | `0` | `[0m` |
+| 55 | **PASS** | touch: creates a new file | `0` | `0` | `[0m` |
+| 56 | **PASS** | touch: updates timestamp of existing file | `0` | `0` | `[0m` |
+| 57 | **PASS** | touch: --help prints usage line | `0` | `0` | `[0m` |
+| 58 | **PASS** | cmd_spec: ls has complete metadata | `0` | `0` | `` |
+| 59 | **PASS** | cmd_spec: cat has complete metadata | `0` | `0` | `` |
+| 60 | **PASS** | cmd_spec: cd has complete metadata | `0` | `0` | `` |
+| 61 | **PASS** | cmd_spec: cp has complete metadata | `0` | `0` | `` |
+| 62 | **PASS** | cmd_spec: echo has complete metadata | `0` | `0` | `` |
+| 63 | **PASS** | cmd_spec: exit has complete metadata | `0` | `0` | `` |
+| 64 | **PASS** | cmd_spec: head has complete metadata | `0` | `0` | `` |
+| 65 | **PASS** | cmd_spec: help has complete metadata | `0` | `0` | `` |
+| 66 | **PASS** | cmd_spec: mkdir has complete metadata | `0` | `0` | `` |
+| 67 | **PASS** | cmd_spec: mv has complete metadata | `0` | `0` | `` |
+| 68 | **PASS** | cmd_spec: pwd has complete metadata | `0` | `0` | `` |
+| 69 | **PASS** | cmd_spec: rm has complete metadata | `0` | `0` | `` |
+| 70 | **PASS** | cmd_spec: rmdir has complete metadata | `0` | `0` | `` |
+| 71 | **PASS** | cmd_spec: stat has complete metadata | `0` | `0` | `` |
+| 72 | **PASS** | cmd_spec: tail has complete metadata | `0` | `0` | `` |
+| 73 | **PASS** | cmd_spec: touch has complete metadata | `0` | `0` | `` |
+| 74 | **PASS** | pkg.json: ls has all required fields | `0` | `0` | `{` |
+| 75 | **PASS** | pkg.json: cat has all required fields | `0` | `0` | `{` |
+| 76 | **PASS** | pkg.json: cd has all required fields | `0` | `0` | `{` |
+| 77 | **PASS** | pkg.json: cp has all required fields | `0` | `0` | `{` |
+| 78 | **PASS** | pkg.json: echo has all required fields | `0` | `0` | `{` |
+| 79 | **PASS** | pkg.json: exit has all required fields | `0` | `0` | `{` |
+| 80 | **PASS** | pkg.json: head has all required fields | `0` | `0` | `{` |
+| 81 | **PASS** | pkg.json: help has all required fields | `0` | `0` | `{` |
+| 82 | **PASS** | pkg.json: mkdir has all required fields | `0` | `0` | `{` |
+| 83 | **PASS** | pkg.json: mv has all required fields | `0` | `0` | `{` |
+| 84 | **PASS** | pkg.json: pwd has all required fields | `0` | `0` | `{` |
+| 85 | **PASS** | pkg.json: rm has all required fields | `0` | `0` | `{` |
+| 86 | **PASS** | pkg.json: rmdir has all required fields | `0` | `0` | `{` |
+| 87 | **PASS** | pkg.json: stat has all required fields | `0` | `0` | `{` |
+| 88 | **PASS** | pkg.json: tail has all required fields | `0` | `0` | `{` |
+| 89 | **PASS** | pkg.json: touch has all required fields | `0` | `0` | `{` |
+| 90 | **PASS** | docs: ls.md has Usage and Options sections | `0` | `0` | `# ls — list directory contents` |
+| 91 | **PASS** | docs: cat.md has Usage and Options sections | `0` | `0` | `# cat — concatenate files and print to stdout` |
+| 92 | **PASS** | docs: cd.md has Usage and Options sections | `0` | `0` | `# cd — change the current directory` |
+| 93 | **PASS** | docs: cp.md has Usage and Options sections | `0` | `0` | `# cp — copy a file or directory` |
+| 94 | **PASS** | docs: echo.md has Usage and Options sections | `0` | `0` | `# echo — print arguments to standard output` |
+| 95 | **PASS** | docs: exit.md has Usage and Options sections | `0` | `0` | `# exit — exit the shell` |
+| 96 | **PASS** | docs: head.md has Usage and Options sections | `0` | `0` | `# head — print the first lines of a file` |
+| 97 | **PASS** | docs: help.md has Usage and Options sections | `0` | `0` | `# help — show help for built-in commands` |
+| 98 | **PASS** | docs: mkdir.md has Usage and Options sections | `0` | `0` | `# mkdir — create directories` |
+| 99 | **PASS** | docs: mv.md has Usage and Options sections | `0` | `0` | `# mv — move (rename) a file or directory` |
+| 100 | **PASS** | docs: pwd.md has Usage and Options sections | `0` | `0` | `# pwd — print working directory` |
+| 101 | **PASS** | docs: rm.md has Usage and Options sections | `0` | `0` | `# rm — remove files or directories` |
+| 102 | **PASS** | docs: rmdir.md has Usage and Options sections | `0` | `0` | `# rmdir — remove empty directories` |
+| 103 | **PASS** | docs: stat.md has Usage and Options sections | `0` | `0` | `# stat — display file status` |
+| 104 | **PASS** | docs: tail.md has Usage and Options sections | `0` | `0` | `# tail — print the last lines of a file` |
+| 105 | **PASS** | docs: touch.md has Usage and Options sections | `0` | `0` | `# touch — create a file or update its timestamp` |
+| 106 | **PASS** | multicall mode2: echo prints argument | `0` | `0` | `hello_multicall` |
+| 107 | **PASS** | multicall mode2: pwd returns an absolute path | `0` | `0` | `/home/rmlr/Development/CoreShell/CoreShell` |
+| 108 | **PASS** | multicall mode2: ls --help shows Usage | `0` | `0` | `` |
+| 109 | **PASS** | multicall mode2: help lists built-in commands | `0` | `0` | `` |
+| 110 | **PASS** | multicall mode2: unknown command returns non-zero | `non-zero` | `1` | `CoreShell: unknown command 'xyznosuchcmd99'` |
+| 111 | **PASS** | multicall mode1: symlink 'echo' dispatches correctly | `0` | `0` | `mode1_ok` |
+| 112 | **PASS** | pwd: --help lists --logical long option (format bug regression) | `0` | `0` | `[0m` |
+| 113 | **PASS** | pwd: --help lists --physical long option (format bug regression) | `0` | `0` | `[0m` |
