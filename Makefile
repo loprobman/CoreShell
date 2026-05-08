@@ -47,7 +47,13 @@ SRC = main.c \
 
 OBJ = $(SRC:.c=.o)
 
-all: $(TARGET)
+PKG_TARGET = pkg/pkg
+PKG_SRC    = pkg/pkg.c
+
+all: $(TARGET) $(PKG_TARGET)
+
+$(PKG_TARGET): $(PKG_SRC)
+	$(CC) $(CFLAGS) -o $(PKG_TARGET) $(PKG_SRC)
 
 $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $(TARGET) $(OBJ) -lm
@@ -59,7 +65,8 @@ debug: CFLAGS += -g -O0
 debug: clean $(TARGET)
 
 clean:
-	rm -f $(OBJ) $(TARGET) $(TEST_OBJ) $(TEST_BIN) test_report.md test_output.log
+	rm -f $(OBJ) $(TARGET) $(PKG_TARGET) $(TEST_OBJ) $(TEST_BIN) test_report.md test_output.log
+	rm -rf bin/ build/
 
 # ── Test runner ──────────────────────────────────────────────────────── #
 LIB_OBJ  = $(filter-out main.o, $(OBJ))
@@ -74,4 +81,4 @@ test: $(TARGET) $(TEST_BIN)
 $(TEST_BIN): $(LIB_OBJ) $(TEST_OBJ)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $(TEST_BIN) $(LIB_OBJ) $(TEST_OBJ) -lm
 
-.PHONY: all clean debug test
+.PHONY: all clean debug test pkg

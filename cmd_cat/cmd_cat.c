@@ -8,25 +8,48 @@
 /* ── argtable builder ──────────────────────────────────────────────────── */
 
 static void build_cat_argtable(struct arg_lit  **help,
+                                struct arg_lit  **help_json,
+                                struct arg_lit  **json,
                                 struct arg_lit  **number,
                                 struct arg_file **files,
                                 struct arg_end  **end,
                                 void           ***argtable_out)
 {
-    *help   = arg_lit0("h", "help",   "show this help and exit");
-    *number = arg_lit0("n", "number", "number all output lines");
-    *files  = arg_filen(NULL, NULL, "<file>", 1, 64, "files to concatenate");
-    /* *end specifies the maximum number of error messages that can be stored or reported 
-       during argument parsing.*/
-    *end    = arg_end(20); 
+    *help      = arg_lit0("h", "help",      "show this help and exit");
+    *help_json = arg_lit0(NULL, "help-json", "print argument schema as JSON and exit");
+    *json      = arg_lit0(NULL, "json",       "output file content as JSON");
+    *number    = arg_lit0("n", "number",     "number all output lines");
+    *files     = arg_filen(NULL, NULL, "<file>", 1, 64, "files to concatenate");
+    *end       = arg_end(20);
 
-    static void *argtable[5];
+    static void *argtable[7];
     argtable[0] = *help;
-    argtable[1] = *number;
-    argtable[2] = *files;
-    argtable[3] = *end;
-    argtable[4] = NULL;
+    argtable[1] = *help_json;
+    argtable[2] = *json;
+    argtable[3] = *number;
+    argtable[4] = *files;
+    argtable[5] = *end;
+    argtable[6] = NULL;
     *argtable_out = argtable;
+}
+
+/* Emit file contents to stdout as a JSON string (inline char-by-char escaping) */
+static void cat_json_content(FILE *fp)
+{
+    putchar('"');
+    int ch;
+    while ((ch = fgetc(fp)) != EOF)
+    {
+        unsigned char c = (unsigned char)ch;
+        if      (c == '"')  fputs("\\\"", stdout);
+        else if (c == '\\') fputs("\\\\", stdout);
+        else if (c == '\n') fputs("\\n",  stdout);
+        else if (c == '\r') fputs("\\r",  stdout);
+        else if (c == '\t') fputs("\\t",  stdout);
+        else if (c < 0x20)  printf("\\u%04x", c);
+        else                putchar(c);
+    }
+    putchar('"');
 }
 
 /* ── run ───────────────────────────────────────────────────────────────── */
@@ -34,75 +57,87 @@ static void build_cat_argtable(struct arg_lit  **help,
 int cat_run(int argc, char **argv)
 {
     struct arg_lit  *help;
+    struct arg_lit  *help_json;
+    struct arg_lit  *json;
     struct arg_lit  *number;
     struct arg_file *files;
     struct arg_end  *end;
     void           **argtable;
 
-    build_cat_argtable(&help, &number, &files, &end, &argtable);
+    build_cat_argtable(&help, &help_json, &json, &number, &files, &end, &argtable);
 
-    /* process the command-line arguments provided to the program. 
-       Analize the arguments according to definitions in argtable 
-       check for errors (missing argumuments/invalid options) and 
-       return them nerrors */
     int nerrors = arg_parse(argc, argv, argtable);
 
-    /* If the user passed -h/--help, free the argtable, print usage, and exit cleanly. */
     if (help->count > 0)
     {
-        arg_freetable(argtable, 4);
+        arg_freetable(argtable, 6);
         cat_print_usage(stdout);
         return 0;
     }
-
-    /* If argument parsing produced errors, print those errors followed by usage,
-       free the argtable, and exit with a failure code. */
+    if (help_json->count > 0)
+    {
+        cmd_print_help_json(stdout, "cat",
+                            "concatenate files and print to stdout",
+                            "Concatenate one or more files and write them to standard output. "
+                            "Use -n to prefix each output line with its sequential line number.",
+                            argtable);
+        arg_freetable(argtable, 6);
+        return 0;
+    }
     if (nerrors > 0)
     {
         arg_print_errors(stdout, end, "cat");
-        arg_freetable(argtable, 4);
+        arg_freetable(argtable, 6);
         cat_print_usage(stdout);
         return 1;
     }
 
     int ret = 0;
-    long line_num = 1;
 
+    if (json->count > 0)
+    {
+        printf("{\n  \"files\": [");
+        int first_file = 1;
+        for (int i = 0; i < files->count; i++)
+        {
+            FILE *fp = fopen(files->filename[i], "r");
+            if (fp == NULL) { perror(files->filename[i]); ret = 1; continue; }
+            if (!first_file) printf(",");
+            printf("\n    {\n      \"path\": ");
+            cmd_json_str(stdout, files->filename[i]);
+            printf(",\n      \"content\": ");
+            cat_json_content(fp);
+            printf("\n    }");
+            fclose(fp);
+            first_file = 0;
+        }
+        printf("\n  ]\n}\n");
+        arg_freetable(argtable, 6);
+        return ret;
+    }
+
+    long line_num = 1;
     for (int i = 0; i < files->count; i++)
     {
-        /* Open a file (by invoking the open system call) and associates 
-            it with a high level I/O stream */
         FILE *fp = fopen(files->filename[i], "r");
-        /* Return NULL if fails */
         if (fp == NULL)
-        {   /* Filename: errno */
+        {
             perror(files->filename[i]);
             ret = 1;
             continue;
         }
-
         char buf[CAT_BUF];
-        /* Read a string from an input stream in buf, with a max number of characters sizeof(buf)-1
-           including (\0), fp is the stream, fgets stops until encountering a new line character \n
-           Buffer Limit or EOF */
         while (fgets(buf, sizeof(buf), fp) != NULL)
         {
             if (number->count > 0)
-            {
                 printf("%6ld\t%s", line_num++, buf);
-            }
             else
-            {
-                /* writes a null-terminated string to a specified file stream without the null 
-                   terminator (\0) */
                 fputs(buf, stdout);
-            }
         }
-        /*  close a file stream that was previously opened with fopen */
         fclose(fp);
     }
 
-    arg_freetable(argtable, 4);
+    arg_freetable(argtable, 6);
     return ret;
 }
 
@@ -121,21 +156,27 @@ int cat_run(int argc, char **argv)
 void cat_print_usage(FILE *out)
 {
     struct arg_lit  *help;
+    struct arg_lit  *help_json;
+    struct arg_lit  *json;
     struct arg_lit  *number;
     struct arg_file *files;
     struct arg_end  *end;
     void           **argtable;
 
-    build_cat_argtable(&help, &number, &files, &end, &argtable);
+    build_cat_argtable(&help, &help_json, &json, &number, &files, &end, &argtable);
 
     fprintf(out, "\nUsage: cat ");
     arg_print_syntax(out, argtable, "\n");
     fprintf(out, "\nConcatenate files and print to standard output.\n");
+    fprintf(out, "With -n, each output line is prefixed with its sequential line number.\n");
     fprintf(out, "\nOptions:\n");
     arg_print_glossary(out, argtable, "  %-22s %s\n");
+    fprintf(out, "\nExamples:\n");
+    fprintf(out, "  cat file.txt\n");
+    fprintf(out, "  cat -n file.txt\n");
     fprintf(out, "\n");
 
-    arg_freetable(argtable, 4);
+    arg_freetable(argtable, 6);
 }
 
 /* ── spec + registration ───────────────────────────────────────────────── */
@@ -144,7 +185,8 @@ cmd_spec_t cmd_cat_spec =
 {
     .name        = "cat",
     .summary     = "concatenate files and print to stdout",
-    .long_help   = "Concatenate one or more files and write them to standard output.",
+    .long_help   = "Concatenate one or more files and write them to standard output. "
+                   "Use -n to prefix each output line with its sequential line number.",
     .run         = cat_run,
     .print_usage = cat_print_usage,
 };

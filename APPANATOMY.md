@@ -286,8 +286,8 @@ void pkg_print_usage(FILE *out);
 
 cmd_spec_t cmd_pkg_spec = {
     .name        = "pkg",
-    .summary     = "manage mysh packages",
-    .long_help   = "Build, install, list, remove, and upgrade packages for the mysh shell.",
+    .summary     = "manage CoreShell packages",
+    .long_help   = "Build, install, list, remove, and upgrade packages for the CoreShell shell.",
     .run         = pkg_run,
     .print_usage = pkg_print_usage,
 };

@@ -128,9 +128,22 @@ int main(int argc, char *argv[])
     /* Populate the command registry */
     register_all_builtin_commands();
 
+    /* Prepend ~/.CoreShell/bin to PATH so installed packages are found */
+    {
+        const char *home = getenv("HOME");
+        const char *path = getenv("PATH");
+        if (home && path)
+        {
+            char newpath[4096];
+            snprintf(newpath, sizeof(newpath), "%s/.CoreShell/bin:%s", home, path);
+            setenv("PATH", newpath, 1);
+        }
+    }
+
     /* ── Multicall dispatch ────────────────────────────────────────────── *
-     * Mode 1: invoked via a symlink named after a command, e.g. ./ls -la  *
-     *   argv[0] basename is a known command → dispatch directly, no REPL. *
+     * Mode 1: invoked via a symlink or hardlink named after a command,    *
+     *   e.g. ./ls -la — argv[0] basename is a known command → dispatch    *
+     *   directly, no REPL.                                                *
      * Mode 2: invoked as ./CoreShell <cmd> [args...]                      *
      *   argv[1] is a known command → shift argv and dispatch directly.    *
      * Mode 3: ./CoreShell (no args, or argv[0] basename is "CoreShell")   *
@@ -138,7 +151,7 @@ int main(int argc, char *argv[])
 
     const char *self = argv0_basename(argv[0]);
 
-    /* Mode 1: symlink invocation *self != CoreShell */
+    /* Mode 1: symlink/hardlink invocation — *self != CoreShell */
     if (strcmp(self, "CoreShell") != 0)
     {
         /* argv[0] is already the command name; pass full argc/argv */

@@ -1,14 +1,14 @@
 # CoreShell Test Report
 
-Generated: 2026-04-30 14:03:34  
-Fixture dir: `/tmp/coreshell_test_Pj2Zs2`
+Generated: 2026-05-08 12:11:58  
+Fixture dir: `/tmp/coreshell_test_f1z58y`
 
 ## Summary
 
 | Metric  | Value |
 |---------|-------|
-| Total   | 113    |
-| Passed  | 113    |
+| Total   | 132    |
+| Passed  | 132    |
 | Failed  | 0    |
 | Rate    | 100.0% |
 
@@ -34,11 +34,11 @@ Fixture dir: `/tmp/coreshell_test_Pj2Zs2`
 | 16 | **PASS** | echo: --help prints usage line | `0` | `0` | `[0m` |
 | 17 | **PASS** | ls: lists fixture directory | `0` | `0` | `[0mempty.txt  test.txt  subdir  ` |
 | 18 | **PASS** | ls: -a shows dot entries | `0` | `0` | `[0mempty.txt  test.txt  .  ..  subdir  ` |
-| 19 | **PASS** | ls: -l shows long format with test.txt | `0` | `0` | `[0m-rw-rw-r--   1 rmlr     rmlr            0 Apr 30 14:03 empty.txt` |
-| 20 | **PASS** | ls: -la combines long + all flags | `0` | `0` | `[0m-rw-rw-r--   1 rmlr     rmlr            0 Apr 30 14:03 empty.txt` |
+| 19 | **PASS** | ls: -l shows long format with test.txt | `0` | `0` | `[0m-rw-rw-r--   1 rmlr     rmlr            0 May  8 12:11 empty.txt` |
+| 20 | **PASS** | ls: -la combines long + all flags | `0` | `0` | `[0m-rw-rw-r--   1 rmlr     rmlr            0 May  8 12:11 empty.txt` |
 | 21 | **PASS** | ls: nonexistent path returns error | `non-zero` | `1` | `[0m` |
 | 22 | **PASS** | ls: --help prints usage line | `0` | `0` | `[0m` |
-| 23 | **PASS** | stat: prints file size for existing file | `0` | `0` | `[0m  File: /tmp/coreshell_test_Pj2Zs2/test.txt` |
+| 23 | **PASS** | stat: prints file size for existing file | `0` | `0` | `[0m  File: /tmp/coreshell_test_f1z58y/test.txt` |
 | 24 | **PASS** | stat: nonexistent file returns error | `non-zero` | `1` | `[0m` |
 | 25 | **PASS** | stat: --help prints usage line | `0` | `0` | `[0m` |
 | 26 | **PASS** | cat: prints full content of test.txt | `0` | `0` | `[0mHello World` |
@@ -105,17 +105,17 @@ Fixture dir: `/tmp/coreshell_test_Pj2Zs2`
 | 87 | **PASS** | pkg.json: stat has all required fields | `0` | `0` | `{` |
 | 88 | **PASS** | pkg.json: tail has all required fields | `0` | `0` | `{` |
 | 89 | **PASS** | pkg.json: touch has all required fields | `0` | `0` | `{` |
-| 90 | **PASS** | docs: ls.md has Usage and Options sections | `0` | `0` | `# ls — list directory contents` |
+| 90 | **PASS** | docs: ls.md has Usage and Options sections | `0` | `0` | `# ls` |
 | 91 | **PASS** | docs: cat.md has Usage and Options sections | `0` | `0` | `# cat — concatenate files and print to stdout` |
 | 92 | **PASS** | docs: cd.md has Usage and Options sections | `0` | `0` | `# cd — change the current directory` |
 | 93 | **PASS** | docs: cp.md has Usage and Options sections | `0` | `0` | `# cp — copy a file or directory` |
-| 94 | **PASS** | docs: echo.md has Usage and Options sections | `0` | `0` | `# echo — print arguments to standard output` |
+| 94 | **PASS** | docs: echo.md has Usage and Options sections | `0` | `0` | `# echo` |
 | 95 | **PASS** | docs: exit.md has Usage and Options sections | `0` | `0` | `# exit — exit the shell` |
 | 96 | **PASS** | docs: head.md has Usage and Options sections | `0` | `0` | `# head — print the first lines of a file` |
 | 97 | **PASS** | docs: help.md has Usage and Options sections | `0` | `0` | `# help — show help for built-in commands` |
 | 98 | **PASS** | docs: mkdir.md has Usage and Options sections | `0` | `0` | `# mkdir — create directories` |
 | 99 | **PASS** | docs: mv.md has Usage and Options sections | `0` | `0` | `# mv — move (rename) a file or directory` |
-| 100 | **PASS** | docs: pwd.md has Usage and Options sections | `0` | `0` | `# pwd — print working directory` |
+| 100 | **PASS** | docs: pwd.md has Usage and Options sections | `0` | `0` | `# pwd` |
 | 101 | **PASS** | docs: rm.md has Usage and Options sections | `0` | `0` | `# rm — remove files or directories` |
 | 102 | **PASS** | docs: rmdir.md has Usage and Options sections | `0` | `0` | `# rmdir — remove empty directories` |
 | 103 | **PASS** | docs: stat.md has Usage and Options sections | `0` | `0` | `# stat — display file status` |
@@ -129,3 +129,22 @@ Fixture dir: `/tmp/coreshell_test_Pj2Zs2`
 | 111 | **PASS** | multicall mode1: symlink 'echo' dispatches correctly | `0` | `0` | `mode1_ok` |
 | 112 | **PASS** | pwd: --help lists --logical long option (format bug regression) | `0` | `0` | `[0m` |
 | 113 | **PASS** | pwd: --help lists --physical long option (format bug regression) | `0` | `0` | `[0m` |
+| 114 | **PASS** | json: echo --help-json emits JSON schema with "name" key | `0` | `0` | `[0m{` |
+| 115 | **PASS** | json: ls --help-json emits JSON schema with "options" key | `0` | `0` | `[0m{` |
+| 116 | **PASS** | json: pwd --help-json emits JSON schema with "name" key | `0` | `0` | `[0m{` |
+| 117 | **PASS** | json: echo --json returns {"output": ...} | `0` | `0` | `[0m{` |
+| 118 | **PASS** | json: pwd --json returns {"path": ...} | `0` | `0` | `[0m{` |
+| 119 | **PASS** | json: ls --json returns {"entries": ...} | `0` | `0` | `[0m{` |
+| 120 | **PASS** | pkg: --help lists build subcommand | `0` | `0` | `` |
+| 121 | **PASS** | pkg: list reports installed packages | `0` | `0` | `Installed packages:` |
+| 122 | **PASS** | pkg: build with missing args returns error | `non-zero` | `1` | `Usage: pkg build <src-dir> <output.tar.gz>` |
+| 123 | **PASS** | pkg: install of nonexistent archive returns error | `non-zero` | `1` | `/tmp/no_such_pkg_coreshell_99.tar.gz: No such file or directory` |
+| 124 | **PASS** | pkg compile --dry-run: mentions docs | `0` | `0` | `  [dry-run] mkdir -p bin build` |
+| 125 | **PASS** | pkg compile --dry-run: mentions pkg.json | `0` | `0` | `  [dry-run] mkdir -p bin build` |
+| 126 | **PASS** | pkg compile cmd_echo: succeeds and prints [OK] | `0` | `0` | `pkg compile: single module 'cmd_echo'` |
+| 127 | **PASS** | compile output: echo.md has Usage and Options | `0` | `0` | `# echo` |
+| 128 | **PASS** | compile output: pwd.md has Usage and Options | `0` | `0` | `# pwd` |
+| 129 | **PASS** | compile output: ls.md has Usage and Options | `0` | `0` | `# ls` |
+| 130 | **PASS** | compile output: echo pkg.json has all fields | `0` | `0` | `{` |
+| 131 | **PASS** | compile output: pwd pkg.json has all fields | `0` | `0` | `{` |
+| 132 | **PASS** | compile output: ls pkg.json has all fields | `0` | `0` | `{` |

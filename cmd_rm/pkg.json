@@ -3,5 +3,6 @@
   "version": "1.0.0",
   "description": "remove files or directories",
   "long_description": "Remove one or more files. Use -r to remove directories recursively.",
-  "docs": "docs/rm.md"
+  "files": ["bin/rm"],
+  "docs": ["docs/rm.md"]
 }

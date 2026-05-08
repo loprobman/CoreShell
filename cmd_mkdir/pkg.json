@@ -3,5 +3,6 @@
   "version": "1.0.0",
   "description": "create directories",
   "long_description": "Create one or more directories. Use -p to create parent directories as needed.",
-  "docs": "docs/mkdir.md"
+  "files": ["bin/mkdir"],
+  "docs": ["docs/mkdir.md"]
 }

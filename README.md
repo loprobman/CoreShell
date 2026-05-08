@@ -5,9 +5,9 @@ A minimal, interactive Unix shell implemented in C (POSIX standard).
 ## Building
 
 ```bash
-make        # Compile the shell
+make        # Compile the shell (CoreShell) and package manager (pkg/pkg)
 make debug  # Compile with debug symbols (-g -O0) for use with gdb
-make clean  # Remove all compiled objects, binaries, and test report
+make clean  # Remove all compiled objects, binaries, and test reports
 ```
 
 ## Running
@@ -34,7 +34,7 @@ captures stdout/stderr via pipes.  On completion it produces:
 
 Both files are regenerated on every run and removed by `make clean`.
 
-### Test suites (113 test cases)
+### Test suites (132 test cases)
 
 | Suite | Cases | What is tested |
 |---|---|---|
@@ -55,10 +55,12 @@ Both files are regenerated on every run and removed by `make clean`.
 | `test_rmdir` | 3 | remove empty, error, `--help` |
 | `test_touch` | 3 | create, update timestamp, `--help` |
 | `test_cmd_spec_metadata` | 16 | all 16 commands have name, summary, long_help, run, print_usage set |
-| `test_pkg_json` | 16 | all 16 `pkg.json` files contain required fields |
+| `test_pkg_json` | 16 | all 16 `pkg.json` files contain all 6 required fields (incl. `files`) |
 | `test_docs_md` | 16 | all 16 `docs/<name>.md` files contain `## Usage` and `## Options` |
 | `test_multicall_dispatch` | 6 | Mode 2 (argv[1]), unknown command error, Mode 1 (symlink) |
 | `test_pwd_help_format` | 2 | `--logical` and `--physical` appear in help (format bug regression) |
+| `test_json_flags` | 6 | `--help-json` emits schema with `name`/`options`; `--json` emits result key |
+| `test_pkg_binary` | 4 | `pkg --help`, `pkg list`, `pkg build` (missing args error), `pkg install` (bad archive) |
 
 ## Debugging
 
@@ -387,7 +389,7 @@ invoked in three modes:
 
 | Mode | Invocation | Behaviour |
 |---|---|---|
-| **Symlink** | `./ls -la` (symlink to `CoreShell`) | `argv[0]` basename is used as the command name |
+| **Symlink / Hardlink** | `./ls -la` (symlink or hardlink to `CoreShell`) | `argv[0]` basename is used as the command name |
 | **Explicit** | `./CoreShell ls -la` | `argv[1]` is used as the command name; `argv` is shifted |
 | **Interactive** | `./CoreShell` | Falls through to the REPL |
 
@@ -403,13 +405,26 @@ if (!spec) return unknown_command(cmd);
 return spec->run(run_argc, run_argv);
 ```
 
-To create symlinks for each command:
+To install all commands as hardlinks in `~/.local/bin/` (recommended — survives
+rename/moves of the binary's parent directory is not an issue with hardlinks):
 
 ```bash
-ln -sf CoreShell ls
-ln -sf CoreShell echo
-# etc.
+BINARY="$(pwd)/CoreShell"
+BINDIR="$HOME/.local/bin"
+for cmd in help exit cd pwd echo ls stat cat head tail cp mv rm mkdir rmdir touch; do
+    ln "$BINARY" "$BINDIR/$cmd"
+done
 ```
+
+Alternatively, create symlinks (must be updated if the binary is moved):
+
+```bash
+for cmd in help exit cd pwd echo ls stat cat head tail cp mv rm mkdir rmdir touch; do
+    ln -sf "$(pwd)/CoreShell" "$HOME/.local/bin/$cmd"
+done
+```
+
+Ensure `~/.local/bin` is on your `PATH` (add `export PATH="$HOME/.local/bin:$PATH"` to your `~/.bashrc` if needed).
 
 ---
 
@@ -427,11 +442,11 @@ ln -sf CoreShell echo
 ## Project Structure
 
 ```
-main.c              # REPL loop, signal handling, registry dispatch
+main.c              # REPL loop, signal handling, registry dispatch, PATH setup
 Makefile            # Build configuration (all, debug, clean, test)
 README.md           # This file
 tests/
-  test_runner.c     # Automated C test runner (57 test cases)
+  test_runner.c     # Automated C test runner (132 test cases)
 test_report.md      # Generated test report (created by make test)
 argtable3/          # Vendored argument-parsing library
 cmd_spec/           # cmd_spec_t typedef (header only)
@@ -452,6 +467,8 @@ cmd_rm/             # rm built-in
 cmd_mkdir/          # mkdir built-in
 cmd_rmdir/          # rmdir built-in
 cmd_touch/          # touch built-in
+pkg/                # standalone package manager (separate binary)
+  pkg.c             # pkg build / install / list / remove
 ```
 
 Each `cmd_*/` directory contains:
@@ -479,7 +496,8 @@ Each command module ships a `pkg.json` file that makes it self-describing:
   "version": "1.0.0",
   "description": "list directory contents",
   "long_description": "List information about entries in the specified directory (default: current directory).",
-  "docs": "docs/ls.md"
+  "files": ["bin/ls"],
+  "docs": ["docs/ls.md"]
 }
 ```
 
@@ -490,8 +508,72 @@ The fields map directly to the command's `cmd_spec_t` struct:
 | `name` | `cmd_spec_t.name` |
 | `description` | `cmd_spec_t.summary` |
 | `long_description` | `cmd_spec_t.long_help` |
-| `docs` | path to generated `docs/<name>.md` |
+| `files` | list of installed binary paths (e.g. `["bin/ls"]`) |
+| `docs` | list of documentation paths (e.g. `["docs/ls.md"]`) |
 
 The `docs/<name>.md` file is generated from the live `--help` output of each command
 and contains the usage line, options table, and examples. It is the canonical reference
 documentation for each built-in.
+
+---
+
+## Package Manager (`pkg`)
+
+`make` builds a standalone `pkg/pkg` binary alongside `CoreShell`. It manages packages
+that follow the `pkg.json` + `.tar.gz` format used by every built-in command module.
+
+### Subcommands
+
+| Subcommand | Description |
+|---|---|
+| `pkg build <src-dir> <output.tar.gz>` | Package a directory tree into a `.tar.gz` archive (requires `pkg.json` in `<src-dir>`) |
+| `pkg install <archive.tar.gz>` | Extract and install a package; symlink executables into `~/.CoreShell/bin/` |
+| `pkg list` | List all installed packages from `~/.CoreShell/pkgdb.txt` |
+| `pkg remove <name>` | Remove a package, its symlinks, and its install directory |
+| `pkg compile [--dry-run] [dir]` | Build modules in `dir` (default: `.`); produces `bin/<name>` + `build/lib<name>.a`; regenerates `docs/<name>.md` and refreshes `pkg.json` |
+
+### Install layout
+
+```
+~/.CoreShell/
+  pkgs/<name>-<version>/   # extracted package contents
+  bin/<name>               # symlink(s) to installed executables
+  pkgdb.txt                # one line per installed package: "<name> <version>"
+```
+
+### Example workflow
+
+```bash
+# Package the echo command module
+./pkg/pkg build cmd_echo echo-1.0.0.tar.gz
+
+# Install it
+./pkg/pkg install echo-1.0.0.tar.gz
+
+# List installed packages
+./pkg/pkg list
+
+# Remove it
+./pkg/pkg remove echo
+```
+
+At startup, CoreShell automatically prepends `~/.CoreShell/bin` to `$PATH` so that
+installed package executables are immediately available without manual shell configuration.
+
+### Compile: Documentation and Metadata Generation
+
+`pkg compile` goes beyond producing a binary — after a successful build it automatically:
+
+1. **Generates `docs/<name>.md`** by running `bin/<name> --help`, splitting the output at the `Options:` boundary, and writing a Markdown file with `## Usage` and `## Options` fenced-code sections.
+
+2. **Refreshes `pkg.json`** by running `bin/<name> --help-json`, extracting the `summary` and `long_help` fields from the command's `cmd_spec_t`, and rewriting `pkg.json` with up-to-date `description` and `long_description` values while preserving `version` and `files[]`.
+
+Use `--dry-run` to preview the planned steps without executing any build or write:
+
+```bash
+./pkg/pkg compile --dry-run cmd_echo   # preview only
+./pkg/pkg compile cmd_echo             # full build + docs + pkg.json
+./pkg/pkg compile .                    # compile all 16 modules under .
+```
+
+The `bin/<name> --help-json` output comes from the upgraded wrapper binary that `pkg compile` generates: it calls `register_<name>_command()` at startup so the `cmd_spec_t` is populated, then emits a real JSON object when `--help-json` is requested.

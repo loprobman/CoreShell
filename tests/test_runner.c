@@ -830,14 +830,14 @@ static void test_pkg_json(void)
 {
     static const char *required[] = {
         "\"name\"", "\"version\"", "\"description\"",
-        "\"long_description\"", "\"docs\""
+        "\"long_description\"", "\"docs\"", "\"files\""
     };
     for (int i = 0; i < N_COMMANDS; i++) {
         char path[256];
         snprintf(path, sizeof(path), "cmd_%s/pkg.json", s_commands[i]);
         check_file_test(
             make_desc("pkg.json: %s has all required fields", s_commands[i]),
-            path, required, 5);
+            path, required, 6);
     }
 }
 
@@ -933,6 +933,113 @@ static void test_pwd_help_format(void)
         "pwd: --help lists --physical long option (format bug regression)",
         {"pwd", "--help", NULL}, 0, "--physical", NULL
     });
+}
+
+/* ---- --json / --help-json flags -------------------------------------- */
+/*
+ * Verifies that --help-json emits a JSON schema object containing the
+ * "name" and "options" keys, and that --json produces a JSON result
+ * object with the command-specific output key.
+ */
+static void test_json_flags(void)
+{
+    /* --help-json: schema must contain "name" and "options" keys */
+    run_test(&(test_case_t){
+        "json: echo --help-json emits JSON schema with \"name\" key",
+        {"echo", "--help-json", NULL}, 0, "\"name\"", NULL
+    });
+    run_test(&(test_case_t){
+        "json: ls --help-json emits JSON schema with \"options\" key",
+        {"ls", "--help-json", NULL}, 0, "\"options\"", NULL
+    });
+    run_test(&(test_case_t){
+        "json: pwd --help-json emits JSON schema with \"name\" key",
+        {"pwd", "--help-json", NULL}, 0, "\"name\"", NULL
+    });
+
+    /* --json: runtime output must be a JSON object with expected key */
+    run_test(&(test_case_t){
+        "json: echo --json returns {\"output\": ...}",
+        {"echo", "--json", "hello", NULL}, 0, "\"output\"", NULL
+    });
+    run_test(&(test_case_t){
+        "json: pwd --json returns {\"path\": ...}",
+        {"pwd", "--json", NULL}, 0, "\"path\"", NULL
+    });
+    run_test(&(test_case_t){
+        "json: ls --json returns {\"entries\": ...}",
+        {"ls", "--json", ".", NULL}, 0, "\"entries\"", NULL
+    });
+}
+
+/* ---- pkg binary ------------------------------------------------------ */
+/*
+ * Tests the standalone pkg/pkg binary via run_shell_test().
+ * Requires the binary to have been built by 'make'.
+ */
+static void test_pkg_binary(void)
+{
+    run_shell_test(&(test_case_t){
+        "pkg: --help lists build subcommand",
+        {"./pkg/pkg", "--help", NULL}, 0, "build", NULL
+    });
+    run_shell_test(&(test_case_t){
+        "pkg: list reports installed packages",
+        {"./pkg/pkg", "list", NULL}, 0, "packages", NULL
+    });
+    run_shell_test(&(test_case_t){
+        "pkg: build with missing args returns error",
+        {"./pkg/pkg", "build", NULL}, EXPECT_FAIL, NULL, NULL
+    });
+    run_shell_test(&(test_case_t){
+        "pkg: install of nonexistent archive returns error",
+        {"./pkg/pkg", "install", "/tmp/no_such_pkg_coreshell_99.tar.gz", NULL},
+        EXPECT_FAIL, NULL, NULL
+    });
+    /* compile --dry-run should mention docs and pkg.json without building */
+    run_shell_test(&(test_case_t){
+        "pkg compile --dry-run: mentions docs",
+        {"./pkg/pkg", "compile", "--dry-run", "cmd_echo", NULL}, 0, "docs", NULL
+    });
+    run_shell_test(&(test_case_t){
+        "pkg compile --dry-run: mentions pkg.json",
+        {"./pkg/pkg", "compile", "--dry-run", "cmd_echo", NULL}, 0, "pkg.json", NULL
+    });
+    run_shell_test(&(test_case_t){
+        "pkg compile cmd_echo: succeeds and prints [OK]",
+        {"./pkg/pkg", "compile", "cmd_echo", NULL}, 0, "[OK]", NULL
+    });
+}
+
+/* ---- compile output artefacts ----------------------------------------- */
+/*
+ * After 'pkg compile', verify that the generated docs/<name>.md files
+ * contain ## Usage and ## Options sections (written by generate_docs_md).
+ */
+static void test_compile_output(void)
+{
+    static const char *required[] = { "## Usage", "## Options" };
+    /* Spot-check a few commands that are reliably compiled via pkg compile */
+    static const char *spot[] = { "echo", "pwd", "ls" };
+    for (int i = 0; i < 3; i++) {
+        char path[256];
+        snprintf(path, sizeof(path), "cmd_%s/docs/%s.md", spot[i], spot[i]);
+        check_file_test(
+            make_desc("compile output: %s.md has Usage and Options", spot[i]),
+            path, required, 2);
+    }
+    /* Spot-check pkg.json for real summary field after compile */
+    static const char *json_req[] = {
+        "\"name\"", "\"version\"", "\"description\"",
+        "\"long_description\"", "\"files\"", "\"docs\""
+    };
+    for (int i = 0; i < 3; i++) {
+        char path[256];
+        snprintf(path, sizeof(path), "cmd_%s/pkg.json", spot[i]);
+        check_file_test(
+            make_desc("compile output: %s pkg.json has all fields", spot[i]),
+            path, json_req, 6);
+    }
 }
 
 /* ── Report generation ───────────────────────────────────────────────── */
@@ -1198,6 +1305,11 @@ int main(void)
     test_docs_md();
     test_multicall_dispatch();
     test_pwd_help_format();
+
+    /* New test suites covering Week-3 additions: JSON flags and pkg binary */
+    test_json_flags();
+    test_pkg_binary();
+    test_compile_output();
 
     /* Print terminal summary */
     print_terminal_report();

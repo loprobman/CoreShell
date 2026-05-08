@@ -3,5 +3,6 @@
   "version": "1.0.0",
   "description": "move (rename) a file or directory",
   "long_description": "Rename SOURCE to DEST, moving it if they are on the same filesystem.",
-  "docs": "docs/mv.md"
+  "files": ["bin/mv"],
+  "docs": ["docs/mv.md"]
 }

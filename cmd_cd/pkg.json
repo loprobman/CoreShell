@@ -3,5 +3,6 @@
   "version": "1.0.0",
   "description": "change the current directory",
   "long_description": "Change the current working directory to the specified path, or $HOME if no path is given.",
-  "docs": "docs/cd.md"
+  "files": ["bin/cd"],
+  "docs": ["docs/cd.md"]
 }

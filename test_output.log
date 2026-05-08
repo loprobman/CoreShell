@@ -1,6 +1,6 @@
 CoreShell Test Log
-Generated : 2026-04-30 14:03:34
-Fixture   : /tmp/coreshell_test_Pj2Zs2
+Generated : 2026-05-08 12:11:58
+Fixture   : /tmp/coreshell_test_f1z58y
 ========================================
 
 [PASS] help: no args lists all commands
@@ -116,6 +116,25 @@ Fixture   : /tmp/coreshell_test_Pj2Zs2
 [PASS] multicall mode1: symlink 'echo' dispatches correctly
 [PASS] pwd: --help lists --logical long option (format bug regression)
 [PASS] pwd: --help lists --physical long option (format bug regression)
+[PASS] json: echo --help-json emits JSON schema with "name" key
+[PASS] json: ls --help-json emits JSON schema with "options" key
+[PASS] json: pwd --help-json emits JSON schema with "name" key
+[PASS] json: echo --json returns {"output": ...}
+[PASS] json: pwd --json returns {"path": ...}
+[PASS] json: ls --json returns {"entries": ...}
+[PASS] pkg: --help lists build subcommand
+[PASS] pkg: list reports installed packages
+[PASS] pkg: build with missing args returns error
+[PASS] pkg: install of nonexistent archive returns error
+[PASS] pkg compile --dry-run: mentions docs
+[PASS] pkg compile --dry-run: mentions pkg.json
+[PASS] pkg compile cmd_echo: succeeds and prints [OK]
+[PASS] compile output: echo.md has Usage and Options
+[PASS] compile output: pwd.md has Usage and Options
+[PASS] compile output: ls.md has Usage and Options
+[PASS] compile output: echo pkg.json has all fields
+[PASS] compile output: pwd pkg.json has all fields
+[PASS] compile output: ls pkg.json has all fields
 
 ========================================
-Results: 113 passed / 0 failed / 113 total (100%)
+Results: 132 passed / 0 failed / 132 total (100%)

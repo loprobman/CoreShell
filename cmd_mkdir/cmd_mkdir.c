@@ -10,25 +10,31 @@
 /* ── argtable builder ──────────────────────────────────────────────────── */
 
 static void build_mkdir_argtable(struct arg_lit  **help,
+                                  struct arg_lit  **help_json,
+                                  struct arg_lit  **json,
                                   struct arg_lit  **parents,
                                   struct arg_lit  **verbose,
                                   struct arg_file **dirs,
                                   struct arg_end  **end,
                                   void           ***argtable_out)
 {
-    *help    = arg_lit0("h", "help",    "show this help and exit");
-    *parents = arg_lit0("p", "parents", "create parent directories as needed");
-    *verbose = arg_lit0("v", "verbose", "print each created directory");
-    *dirs    = arg_filen(NULL, NULL, "<dir>", 1, 64, "directories to create");
-    *end     = arg_end(20);
+    *help      = arg_lit0("h", "help",       "show this help and exit");
+    *help_json = arg_lit0(NULL, "help-json",  "print argument schema as JSON and exit");
+    *json      = arg_lit0(NULL, "json",        "output result as JSON");
+    *parents   = arg_lit0("p", "parents",      "create parent directories as needed");
+    *verbose   = arg_lit0("v", "verbose",       "print each created directory");
+    *dirs      = arg_filen(NULL, NULL, "<dir>", 1, 64, "directories to create");
+    *end       = arg_end(20);
 
-    static void *argtable[6];
+    static void *argtable[8];
     argtable[0] = *help;
-    argtable[1] = *parents;
-    argtable[2] = *verbose;
-    argtable[3] = *dirs;
-    argtable[4] = *end;
-    argtable[5] = NULL;
+    argtable[1] = *help_json;
+    argtable[2] = *json;
+    argtable[3] = *parents;
+    argtable[4] = *verbose;
+    argtable[5] = *dirs;
+    argtable[6] = *end;
+    argtable[7] = NULL;
     *argtable_out = argtable;
 }
 
@@ -81,27 +87,39 @@ static int mkdir_p(const char *path, mode_t mode, int verbose)
 int mkdir_run(int argc, char **argv)
 {
     struct arg_lit  *help;
+    struct arg_lit  *help_json;
+    struct arg_lit  *json;
     struct arg_lit  *parents;
     struct arg_lit  *verbose;
     struct arg_file *dirs;
     struct arg_end  *end;
     void           **argtable;
 
-    build_mkdir_argtable(&help, &parents, &verbose, &dirs, &end, &argtable);
+    build_mkdir_argtable(&help, &help_json, &json, &parents, &verbose, &dirs, &end, &argtable);
 
-    // Parse command-line arguments and handle help/errors
     int nerrors = arg_parse(argc, argv, argtable);
 
     if (help->count > 0)
     {
-        arg_freetable(argtable, 5);
+        arg_freetable(argtable, 7);
         mkdir_print_usage(stdout);
+        return 0;
+    }
+    if (help_json->count > 0)
+    {
+        cmd_print_help_json(stdout, "mkdir",
+                            "create directories",
+                            "Create one or more directories. Use -p to create parent "
+                            "directories as needed and suppress errors if a directory already exists. "
+                            "Use -v to print each directory name as it is created.",
+                            argtable);
+        arg_freetable(argtable, 7);
         return 0;
     }
     if (nerrors > 0)
     {
         arg_print_errors(stdout, end, "mkdir");
-        arg_freetable(argtable, 5);
+        arg_freetable(argtable, 7);
         mkdir_print_usage(stdout);
         return 1;
     }
@@ -112,9 +130,7 @@ int mkdir_run(int argc, char **argv)
         if (parents->count > 0)
         {
             if (mkdir_p(dirs->filename[i], 0755, verbose->count) != 0)
-            {
                 ret = 1;
-            }
         }
         else
         {
@@ -130,7 +146,20 @@ int mkdir_run(int argc, char **argv)
         }
     }
 
-    arg_freetable(argtable, 5);
+    if (json->count > 0)
+    {
+        printf("{\n  \"status\": ");
+        cmd_json_str(stdout, ret == 0 ? "ok" : "error");
+        printf(",\n  \"created\": [");
+        for (int i = 0; i < dirs->count; i++)
+        {
+            if (i > 0) printf(", ");
+            cmd_json_str(stdout, dirs->filename[i]);
+        }
+        printf("]\n}\n");
+    }
+
+    arg_freetable(argtable, 7);
     return ret;
 }
 
@@ -139,22 +168,29 @@ int mkdir_run(int argc, char **argv)
 void mkdir_print_usage(FILE *out)
 {
     struct arg_lit  *help;
+    struct arg_lit  *help_json;
+    struct arg_lit  *json;
     struct arg_lit  *parents;
     struct arg_lit  *verbose;
     struct arg_file *dirs;
     struct arg_end  *end;
     void           **argtable;
 
-    build_mkdir_argtable(&help, &parents, &verbose, &dirs, &end, &argtable);
+    build_mkdir_argtable(&help, &help_json, &json, &parents, &verbose, &dirs, &end, &argtable);
 
     fprintf(out, "\nUsage: mkdir ");
     arg_print_syntax(out, argtable, "\n");
     fprintf(out, "\nCreate one or more directories.\n");
+    fprintf(out, "With -p, parent directories are created as needed and no error is reported\n");
+    fprintf(out, "if the target already exists. Use -v to print each directory name as it is created.\n");
     fprintf(out, "\nOptions:\n");
     arg_print_glossary(out, argtable, "  %-22s %s\n");
+    fprintf(out, "\nExamples:\n");
+    fprintf(out, "  mkdir newdir\n");
+    fprintf(out, "  mkdir -p a/b/c\n");
     fprintf(out, "\n");
 
-    arg_freetable(argtable, 5);
+    arg_freetable(argtable, 7);
 }
 
 /* ── spec + registration ───────────────────────────────────────────────── */
@@ -164,7 +200,8 @@ cmd_spec_t cmd_mkdir_spec =
     .name        = "mkdir",
     .summary     = "create directories",
     .long_help   = "Create one or more directories. Use -p to create parent "
-                   "directories as needed.",
+                   "directories as needed and suppress errors if a directory already exists. "
+                   "Use -v to print each directory name as it is created.",
     .run         = mkdir_run,
     .print_usage = mkdir_print_usage,
 };
