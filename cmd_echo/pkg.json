@@ -1,0 +1,7 @@
+{
+  "name": "echo",
+  "version": "1.0.0",
+  "description": "print arguments to standard output",
+  "long_description": "Echo the given string arguments to stdout, separated by spaces. Supports -n and -e flags similar to GNU echo.",
+  "docs": "docs/echo.md"
+}

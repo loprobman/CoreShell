@@ -1,0 +1,7 @@
+{
+  "name": "pwd",
+  "version": "1.0.0",
+  "description": "print working directory",
+  "long_description": "Displays the absolute path of the current directory.",
+  "docs": "docs/pwd.md"
+}

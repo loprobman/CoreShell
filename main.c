@@ -5,212 +5,202 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <errno.h>
-#include "help.h"
+#include <libgen.h>
+#include "cmd_registry.h"
 
 #define BUFFER_SIZE 1024
-#define MAX_ARGS 64
+#define MAX_ARGS    64
 
-/* Global flag for signal handling */
-volatile int interrupted = 0;
+/* ── multicall helpers ─────────────────────────────────────────────────── */
 
-/* Signal handler for SIGINT (Ctrl+C) */
-void signal_handler(int sig) 
+/* Return the basename of path without modifying it.
+   Uses a static buffer — suitable only for one call at a time. */
+static const char *argv0_basename(const char *path)
 {
-    (void)sig; // Unused parameter
-    printf("CTRL+C pressed\n");
-    exit(0);
+    /* basename(3) may modify its argument; work on a copy */
+    static char buf[256];
+    strncpy(buf, path, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    /* basename() takes a file path string and returns only the last component of that path 
+      — everything after the final /. */
+    return basename(buf); 
 }
 
-/* Parse command line into arguments */
-int parse_command(char *input, char *args[]) 
+/* Called in multicall mode when no command matches. */
+static int unknown_command(const char *cmd)
 {
-    int i = 0;
-    /*When strtok is called for the first time with the input string, 
-    it searches for the first occurrence of any delimiter character (" " and "\t" and "\n") 
-    and replaces it with a null terminator ('\0'). It then returns a pointer to the first token */
+    fprintf(stderr, "CoreShell: unknown command '%s'\n", cmd);
+    fprintf(stderr, "Run 'CoreShell' with no arguments to enter the interactive shell.\n");
+    return EXIT_FAILURE;
+}
+
+/* ── signal handling ───────────────────────────────────────────────────── */
+
+/* Set by SIGINT handler; checked in the REPL loop */
+static volatile sig_atomic_t g_sigint = 0;
+
+/* SIGINT handler: does NOT exit the shell (AGENTS.md requirement).
+   Uses only async-signal-safe functions (write). */
+static void signal_handler(int sig)
+{
+    (void)sig;
+    g_sigint = 1;
+    /* Write a newline so the next prompt starts on a fresh line */
+    write(STDOUT_FILENO, "\n", 1);
+}
+
+/* ── input ─────────────────────────────────────────────────────────────── */
+
+/* Parse a command line into an argument array.
+   Returns the number of arguments found. */
+static int parse_command(char *input, char *args[])
+{
+    int   i     = 0;
     char *token = strtok(input, " \t\n");
-    
-    while (token != NULL && i < MAX_ARGS - 1) 
+
+    while (token != NULL && i < MAX_ARGS - 1)
     {
         args[i++] = token;
-        /* Subsequent calls to strtok with NULL as the first argument will return the next 
-           token in the string, continuing from where it left off.*/
         token = strtok(NULL, " \t\n");
     }
-    /*By assigning NULL to args[i], the code ensures that the argument list is properly terminated. 
-    This is important because functions like execvp() rely on this NULL pointer to know where the 
-    list of arguments ends.*/
     args[i] = NULL;
     return i;
 }
 
-/* Execute a command */
-void execute_command(char *args[]) 
+/* ── input ─────────────────────────────────────────────────────────────── */
+
+/* Read one line from stdin.
+   Returns a heap-allocated string (caller must free), or NULL on Ctrl-C
+   (caller should re-prompt).  Exits on Ctrl-D (EOF) or unrecoverable error. */
+static char *read_input(void)
 {
-    if (args[0] == NULL) 
+    char *input = malloc(BUFFER_SIZE);
+    if (input == NULL)
     {
-        return;
-    }
-    
-    /* Built-in help command */
-    if (strcmp(args[0], "help") == 0) 
-    {
-        display_help(args[1]);
-        return;
-    }
-
-    /* Built-in commands */
-    if (strcmp(args[0], "exit") == 0) 
-    {
-        if (args[1] != NULL && (strcmp(args[1], "--help") == 0 || strcmp(args[1], "-h") == 0))
-        { 
-            display_help("exit"); 
-            return; 
-        }
-        exit(0);
-    }
-
-    /* Built-in cd command */
-    if (strcmp(args[0], "cd") == 0) 
-    {
-        if (args[1] != NULL && (strcmp(args[1], "--help") == 0 || strcmp(args[1], "-h") == 0))
-        { 
-            display_help("cd"); 
-            return; 
-        }
-        if (args[1] == NULL) 
-        {
-            /* No additional argument change to users home directory */
-            /* getenv("HOME") function retrieves the path to the home 
-               directory from the environment variables.*/
-            chdir(getenv("HOME"));
-        } 
-        else 
-        {   /* Change the specified directory */
-            if (chdir(args[1]) != 0) 
-            {   /* Print error message if chdir fails */
-                perror("cd");
-            }
-        }
-        return;
-    }
-    
-    /* Built-in pwd command: print working directory */
-    if (strcmp(args[0], "pwd") == 0) 
-    {
-        if (args[1] != NULL && (strcmp(args[1], "--help") == 0 || strcmp(args[1], "-h") == 0))
-        { 
-            display_help("pwd"); 
-            return; 
-        }
-        char cwd[BUFFER_SIZE]; 
-        /* getcwd() fills cwd with the absolute pathname of the current working directory */ 
-        if (getcwd(cwd, sizeof(cwd)) != NULL)
-        {
-            printf("%s\n", cwd);
-        } 
-        else 
-        {
-            /* If getcwd fails, print an error message */
-            perror("pwd");
-        }
-        return;
-    }
-    
-    /* Built-in echo command: print arguments to the terminal */
-    if (strcmp(args[0], "echo") == 0) 
-    {
-        if (args[1] != NULL && (strcmp(args[1], "--help") == 0 || strcmp(args[1], "-h") == 0))
-        { 
-            display_help("echo"); 
-            return; 
-        }
-        for (int i = 1; args[i] != NULL; i++) 
-        {
-            /* Print each argument followed by a space */
-            printf("%s ", args[i]);
-        }
-        printf("\n");
-        return;
-    }
-    
-    /* The shell needs to create a separate process to run external commands 
-    so that the shell itself can continue running after the command finishes.*/
-    pid_t pid = fork();
-    if (pid == 0) 
-    {
-        /* Child process */
-        /* Replace its memory with the external program specified by the user 
-           (e.g., ls, cat, etc.).*/
-        execvp(args[0], args);
-        /* If execvp returns, it means an error occurred */
-        perror("execvp");
-        exit(EXIT_FAILURE);
-    } else if (pid > 0) 
-    {
-        /* Parent process (The shell) */
-        /* The parent waits for the child process to finish*/
-        waitpid(pid, NULL, 0);
-    } 
-    else 
-    {   /* Fork failed */
-        perror("fork");
-    }
-}
-
-char *read_input(void)
-{
-    /* Allocate memory for user input */
-    char *input = malloc(BUFFER_SIZE * sizeof(char));
-    /* Handle malloc fail */
-    if(input == NULL)
-    {
-        fprintf(stderr, "Allocation error\n");
+        fprintf(stderr, "malloc: out of memory\n");
         exit(EXIT_FAILURE);
     }
-    /* read a line from stdin (the terminal) into the input buffer */
-    if(fgets(input, BUFFER_SIZE, stdin) == NULL)
+
+    if (fgets(input, BUFFER_SIZE, stdin) == NULL)
     {
-        free(input); /*free input alloctaed in the heap */
+        free(input);
+        if (feof(stdin))
+        {
+            printf("\n");
+            exit(EXIT_SUCCESS); /* Ctrl-D: clean exit */
+        }
+        if (g_sigint)
+        {
+            clearerr(stdin);
+            return NULL; /* Ctrl-C: signal caller to re-prompt */
+        }
         exit(EXIT_FAILURE);
     }
-    /* Remove newline character captured when user presses ENTER 
-        and add string terminator character '\0'*/
-    input[strcspn(input, "\n")] = '\0'; 
+
+    /* Strip trailing newline */
+    input[strcspn(input, "\n")] = '\0';
     return input;
 }
 
-/* Main REPL loop */
-int main() 
+/* ── command dispatch ──────────────────────────────────────────────────── */
+
+/* Dispatch a built-in command by name.  Returns the command's exit code,
+   or 1 if the command is not found. */
+static int dispatch_builtin(int argc, char *argv[])
 {
-    char *input;
-    char *args[MAX_ARGS];
-    
-    /* Setup signal handler for Ctrl+C */
+    if (argv[0] == NULL)
+        return 0;
+
+    const cmd_spec_t *spec = find_command(argv[0]);
+    if (spec != NULL)
+        return spec->run(argc, argv);
+
+    fprintf(stderr, "CoreShell: '%s': command not found\n", argv[0]);
+    return 1;
+}
+
+/* ── main ──────────────────────────────────────────────────────────────── */
+
+int main(int argc, char *argv[])
+{
     signal(SIGINT, signal_handler);
-    
-    printf("CoreShell v1.0 - Simple Linux Shell\n");
-    printf("Type 'exit' to quit\n\n");
-    
-    while(1) 
+
+    /* Populate the command registry */
+    register_all_builtin_commands();
+
+    /* ── Multicall dispatch ────────────────────────────────────────────── *
+     * Mode 1: invoked via a symlink named after a command, e.g. ./ls -la  *
+     *   argv[0] basename is a known command → dispatch directly, no REPL. *
+     * Mode 2: invoked as ./CoreShell <cmd> [args...]                      *
+     *   argv[1] is a known command → shift argv and dispatch directly.    *
+     * Mode 3: ./CoreShell (no args, or argv[0] basename is "CoreShell")   *
+     *   → fall through to the interactive REPL (Read-Eval-Print-Loop).    */
+
+    const char *self = argv0_basename(argv[0]);
+
+    /* Mode 1: symlink invocation *self != CoreShell */
+    if (strcmp(self, "CoreShell") != 0)
     {
-        interrupted = 0;
+        /* argv[0] is already the command name; pass full argc/argv */
+        const cmd_spec_t *spec = find_command(self);
+        if (!spec)
+            return unknown_command(self);
+        return spec->run(argc, argv); /* Run Command */
+    }
 
-        /* Print USER */
-        printf("%s@CoreShell> ",getenv("USER"));
-        /* flush stream to ensure prompt is printed before input */
-        fflush(stdout); 
-        input = read_input();
-
-        if (input == NULL) 
+    /* Mode 2: ./CoreShell <cmd> [args...] */
+    if (argc > 1)
+    {
+        const char *cmd = argv[1];
+        /* Only dispatch if argv[1] matches a known built-in;
+           otherwise fall through to the REPL so the user can still
+           run an interactive session with an initial command typed. */
+        const cmd_spec_t *spec = find_command(cmd);
+        if (spec)
         {
+            /* Shift: run_argv[0] = cmd name, run_argc excludes program name */
+            int run_argc = argc - 1;
+            char **run_argv = &argv[1];
+            return spec->run(run_argc, run_argv);
+        }
+        /* Unknown command in multicall mode → error, no REPL */
+        return unknown_command(cmd);
+    }
+
+    /* ── Mode 3: Interactive REPL ──────────────────────────────────────── */
+    char  *input;
+    char  *args[MAX_ARGS];
+
+    printf("CoreShell v2.0 - Simple Linux Shell\n");
+    printf("Type 'help' for available commands or 'exit' to quit.\n\n");
+
+    for (;;)
+    {
+        g_sigint = 0;
+
+        const char *user = getenv("USER");
+        printf("%s@CoreShell> ", user ? user : "user");
+        fflush(stdout);
+
+        input = read_input();
+        if (input == NULL)
+        {
+            /* Ctrl-C: re-prompt */
             continue;
         }
-        parse_command(input, args);
-        execute_command(args);
+
+        /* Skip blank lines */
+        if (input[0] == '\0')
+        {
+            free(input);
+            continue;
+        }
+
+        int nargs = parse_command(input, args);
+        if (nargs > 0)
+            dispatch_builtin(nargs, args);
         free(input);
     }
-    
-    printf("Exiting CoreShell\n");
-    return 0;
+
+    return 0; /* unreachable */
 }

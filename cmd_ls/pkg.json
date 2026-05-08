@@ -1,0 +1,7 @@
+{
+  "name": "ls",
+  "version": "1.0.0",
+  "description": "list directory contents",
+  "long_description": "List information about entries in the specified directory (default: current directory).",
+  "docs": "docs/ls.md"
+}

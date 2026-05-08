@@ -1,0 +1,7 @@
+{
+  "name": "head",
+  "version": "1.0.0",
+  "description": "print the first lines of a file",
+  "long_description": "Output the first N lines (default: 10) of the given file.",
+  "docs": "docs/head.md"
+}
