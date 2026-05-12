@@ -1,26 +1,32 @@
-# echo — print arguments to standard output
-
-Echo the given string arguments to stdout, separated by spaces. Supports -n and -e flags similar to GNU echo.
+# echo
 
 ## Usage
 
 ```
-echo  [-hne] [[string]]...
+
+Usage: echo  [-hne] [--help-json] [--json] [[string]]...
+
+Print arguments to standard output, separated by spaces.
+With -e, backslash sequences are interpreted: \n (newline), \t (tab), \\ etc.
+With -n, the trailing newline is suppressed.
+
 ```
 
 ## Options
 
-| Option | Description |
-|--------|-------------|
-| `-h, --help` | show this help and exit |
-| `-n, --no-newline` | do not output trailing newline |
-| `-e, --escape` | enable backslash escape interpretation |
-| `[string]` | strings to print |
+```
+Options:
+  -h, --help             show this help and exit
+  --help-json            print argument schema as JSON and exit
+  --json                 output result as JSON
+  -n, --no-newline       do not output trailing newline
+  -e, --escape           enable backslash escape interpretation
+  [string]               strings to print
 
-## Examples
+Examples:
+  echo Hello World
+  echo -e "line1\nline2"
+  echo -n no-newline
 
-```sh
-echo Hello World      # print "Hello World"
-echo -n no newline    # print without trailing newline
-echo -e "tab\there"  # interpret \t as a tab character
+
 ```

@@ -7,23 +7,29 @@
 /* ── argtable builder ──────────────────────────────────────────────────── */
 
 static void build_mv_argtable(struct arg_lit  **help,
+                               struct arg_lit  **help_json,
+                               struct arg_lit  **json,
                                struct arg_lit  **verbose,
                                struct arg_file **files,
                                struct arg_end  **end,
                                void           ***argtable_out)
 {
-    *help    = arg_lit0("h", "help",    "show this help and exit");
-    *verbose = arg_lit0("v", "verbose", "explain what is being done");
-    *files   = arg_filen(NULL, NULL, "<src> <dst>", 2, 2,
-                         "source and destination");
-    *end     = arg_end(20);
+    *help      = arg_lit0("h", "help",       "show this help and exit");
+    *help_json = arg_lit0(NULL, "help-json",  "print argument schema as JSON and exit");
+    *json      = arg_lit0(NULL, "json",        "output result as JSON");
+    *verbose   = arg_lit0("v", "verbose",      "explain what is being done");
+    *files     = arg_filen(NULL, NULL, "<src> <dst>", 2, 2,
+                           "source and destination");
+    *end       = arg_end(20);
 
-    static void *argtable[5];
+    static void *argtable[7];
     argtable[0] = *help;
-    argtable[1] = *verbose;
-    argtable[2] = *files;
-    argtable[3] = *end;
-    argtable[4] = NULL;
+    argtable[1] = *help_json;
+    argtable[2] = *json;
+    argtable[3] = *verbose;
+    argtable[4] = *files;
+    argtable[5] = *end;
+    argtable[6] = NULL;
     *argtable_out = argtable;
 }
 
@@ -45,26 +51,38 @@ static void build_mv_argtable(struct arg_lit  **help,
 int mv_run(int argc, char **argv)
 {
     struct arg_lit  *help;
+    struct arg_lit  *help_json;
+    struct arg_lit  *json;
     struct arg_lit  *verbose;
     struct arg_file *files;
     struct arg_end  *end;
     void           **argtable;
 
-    build_mv_argtable(&help, &verbose, &files, &end, &argtable);
+    build_mv_argtable(&help, &help_json, &json, &verbose, &files, &end, &argtable);
 
-    // Parse command-line arguments and handle help/errors
     int nerrors = arg_parse(argc, argv, argtable);
 
     if (help->count > 0)
     {
-        arg_freetable(argtable, 4);
+        arg_freetable(argtable, 6);
         mv_print_usage(stdout);
+        return 0;
+    }
+    if (help_json->count > 0)
+    {
+        cmd_print_help_json(stdout, "mv",
+                            "move (rename) a file or directory",
+                            "Rename SOURCE to DEST using the rename(2) syscall. "
+                            "SOURCE and DEST must reside on the same filesystem. "
+                            "Use -v to report the operation.",
+                            argtable);
+        arg_freetable(argtable, 6);
         return 0;
     }
     if (nerrors > 0)
     {
         arg_print_errors(stdout, end, "mv");
-        arg_freetable(argtable, 4);
+        arg_freetable(argtable, 6);
         mv_print_usage(stdout);
         return 1;
     }
@@ -72,20 +90,28 @@ int mv_run(int argc, char **argv)
     const char *src = files->filename[0];
     const char *dst = files->filename[1];
 
+    int ret = 0;
     if (rename(src, dst) != 0)
     {
         perror("mv");
-        arg_freetable(argtable, 4);
-        return 1;
+        ret = 1;
     }
-
-    if (verbose->count > 0)
+    else if (verbose->count > 0)
     {
         printf("'%s' -> '%s'\n", src, dst);
     }
 
-    arg_freetable(argtable, 4);
-    return 0;
+    if (json->count > 0)
+    {
+        printf("{\n  \"status\": ");
+        cmd_json_str(stdout, ret == 0 ? "ok" : "error");
+        printf(",\n  \"src\": ");  cmd_json_str(stdout, src);
+        printf(",\n  \"dst\": ");  cmd_json_str(stdout, dst);
+        printf("\n}\n");
+    }
+
+    arg_freetable(argtable, 6);
+    return ret;
 }
 
 /* ── print_usage ───────────────────────────────────────────────────────── */
@@ -93,21 +119,28 @@ int mv_run(int argc, char **argv)
 void mv_print_usage(FILE *out)
 {
     struct arg_lit  *help;
+    struct arg_lit  *help_json;
+    struct arg_lit  *json;
     struct arg_lit  *verbose;
     struct arg_file *files;
     struct arg_end  *end;
     void           **argtable;
 
-    build_mv_argtable(&help, &verbose, &files, &end, &argtable);
+    build_mv_argtable(&help, &help_json, &json, &verbose, &files, &end, &argtable);
 
     fprintf(out, "\nUsage: mv ");
     arg_print_syntax(out, argtable, "\n");
     fprintf(out, "\nMove (rename) SOURCE to DEST.\n");
+    fprintf(out, "Uses the rename(2) syscall; SOURCE and DEST must be on the same filesystem.\n");
+    fprintf(out, "Use -v to report the rename operation.\n");
     fprintf(out, "\nOptions:\n");
     arg_print_glossary(out, argtable, "  %-22s %s\n");
+    fprintf(out, "\nExamples:\n");
+    fprintf(out, "  mv old.txt new.txt\n");
+    fprintf(out, "  mv -v src/ dst/\n");
     fprintf(out, "\n");
 
-    arg_freetable(argtable, 4);
+    arg_freetable(argtable, 6);
 }
 
 /* ── spec + registration ───────────────────────────────────────────────── */
@@ -116,8 +149,9 @@ cmd_spec_t cmd_mv_spec =
 {
     .name        = "mv",
     .summary     = "move (rename) a file or directory",
-    .long_help   = "Rename SOURCE to DEST, moving it if they are on the same "
-                   "filesystem.",
+    .long_help   = "Rename SOURCE to DEST using the rename(2) syscall. "
+                   "SOURCE and DEST must reside on the same filesystem. "
+                   "Use -v to report the operation.",
     .run         = mv_run,
     .print_usage = mv_print_usage,
 };

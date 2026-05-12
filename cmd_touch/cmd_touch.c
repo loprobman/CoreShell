@@ -10,6 +10,8 @@
 /* ── argtable builder ──────────────────────────────────────────────────── */
 
 static void build_touch_argtable(struct arg_lit  **help,
+                                  struct arg_lit  **help_json,
+                                  struct arg_lit  **json,
                                   struct arg_lit  **no_create,
                                   struct arg_file **files,
                                   struct arg_end  **end,
@@ -17,18 +19,24 @@ static void build_touch_argtable(struct arg_lit  **help,
 {
     *help      = arg_lit0("h", "help",
                           "show this help and exit");
+    *help_json = arg_lit0(NULL, "help-json",
+                          "print argument schema as JSON and exit");
+    *json      = arg_lit0(NULL, "json",
+                          "output result as JSON");
     *no_create = arg_lit0("c", "no-create",
                           "do not create any files");
     *files     = arg_filen(NULL, NULL, "<file>", 1, 64,
                            "files to create or update");
     *end       = arg_end(20);
 
-    static void *argtable[5];
+    static void *argtable[7];
     argtable[0] = *help;
-    argtable[1] = *no_create;
-    argtable[2] = *files;
-    argtable[3] = *end;
-    argtable[4] = NULL;
+    argtable[1] = *help_json;
+    argtable[2] = *json;
+    argtable[3] = *no_create;
+    argtable[4] = *files;
+    argtable[5] = *end;
+    argtable[6] = NULL;
     *argtable_out = argtable;
 }
 
@@ -50,26 +58,37 @@ static void build_touch_argtable(struct arg_lit  **help,
 int touch_run(int argc, char **argv)
 {
     struct arg_lit  *help;
+    struct arg_lit  *help_json;
+    struct arg_lit  *json;
     struct arg_lit  *no_create;
     struct arg_file *files;
     struct arg_end  *end;
     void           **argtable;
 
-    build_touch_argtable(&help, &no_create, &files, &end, &argtable);
+    build_touch_argtable(&help, &help_json, &json, &no_create, &files, &end, &argtable);
 
-    // Parse command-line arguments and handle help/errors
     int nerrors = arg_parse(argc, argv, argtable);
 
     if (help->count > 0)
     {
-        arg_freetable(argtable, 4);
+        arg_freetable(argtable, 6);
         touch_print_usage(stdout);
+        return 0;
+    }
+    if (help_json->count > 0)
+    {
+        cmd_print_help_json(stdout, "touch",
+                            "create a file or update its timestamp",
+                            "Update the access and modification timestamps of each file."
+                            " Create the file if it does not exist, unless -c is specified.",
+                            argtable);
+        arg_freetable(argtable, 6);
         return 0;
     }
     if (nerrors > 0)
     {
         arg_print_errors(stdout, end, "touch");
-        arg_freetable(argtable, 4);
+        arg_freetable(argtable, 6);
         touch_print_usage(stdout);
         return 1;
     }
@@ -79,19 +98,13 @@ int touch_run(int argc, char **argv)
     {
         const char *path = files->filename[i];
 
-        /* Try to update timestamp first */
         if (utime(path, NULL) == 0)
-        {
-            continue; /* success: file existed and timestamp updated */
-        }
+            continue;
 
         if (errno == ENOENT)
         {
             if (no_create->count > 0)
-            {
-                continue; /* -c: silently skip non-existent files */
-            }
-            /* Create the file */
+                continue;
             int fd = open(path, O_CREAT | O_WRONLY, 0644);
             if (fd < 0)
             {
@@ -110,7 +123,20 @@ int touch_run(int argc, char **argv)
         }
     }
 
-    arg_freetable(argtable, 4);
+    if (json->count > 0)
+    {
+        printf("{\n  \"status\": ");
+        cmd_json_str(stdout, ret == 0 ? "ok" : "error");
+        printf(",\n  \"touched\": [");
+        for (int i = 0; i < files->count; i++)
+        {
+            if (i > 0) printf(", ");
+            cmd_json_str(stdout, files->filename[i]);
+        }
+        printf("]\n}\n");
+    }
+
+    arg_freetable(argtable, 6);
     return ret;
 }
 
@@ -119,21 +145,27 @@ int touch_run(int argc, char **argv)
 void touch_print_usage(FILE *out)
 {
     struct arg_lit  *help;
+    struct arg_lit  *help_json;
+    struct arg_lit  *json;
     struct arg_lit  *no_create;
     struct arg_file *files;
     struct arg_end  *end;
     void           **argtable;
 
-    build_touch_argtable(&help, &no_create, &files, &end, &argtable);
+    build_touch_argtable(&help, &help_json, &json, &no_create, &files, &end, &argtable);
 
     fprintf(out, "\nUsage: touch ");
     arg_print_syntax(out, argtable, "\n");
-    fprintf(out, "\nUpdate file timestamps, or create the file if it does not exist.\n");
+    fprintf(out, "\nUpdate the access and modification timestamps of each file to the current time.\n");
+    fprintf(out, "If a file does not exist it is created (unless -c is given).\n");
     fprintf(out, "\nOptions:\n");
     arg_print_glossary(out, argtable, "  %-22s %s\n");
+    fprintf(out, "\nExamples:\n");
+    fprintf(out, "  touch newfile.txt\n");
+    fprintf(out, "  touch -c maybe.txt\n");
     fprintf(out, "\n");
 
-    arg_freetable(argtable, 4);
+    arg_freetable(argtable, 6);
 }
 
 /* ── spec + registration ───────────────────────────────────────────────── */

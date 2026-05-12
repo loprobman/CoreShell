@@ -2,6 +2,7 @@
   "name": "ls",
   "version": "1.0.0",
   "description": "list directory contents",
-  "long_description": "List information about entries in the specified directory (default: current directory).",
-  "docs": "docs/ls.md"
+  "long_description": "List entries in the specified directory (default: current directory). Use -a to include hidden entries (names beginning with '.'). Use -l for a long listing showing permissions, owner, size, and modification time.",
+  "files": ["bin/ls"],
+  "docs": ["docs/ls.md"]
 }

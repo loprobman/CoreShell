@@ -2,6 +2,7 @@
   "name": "pwd",
   "version": "1.0.0",
   "description": "print working directory",
-  "long_description": "Displays the absolute path of the current directory.",
-  "docs": "docs/pwd.md"
+  "long_description": "Print the absolute path of the current working directory. By default uses getcwd(3) to return the physical path with symlinks resolved. Use -L to return the logical $PWD from the environment, which may contain symlinks.",
+  "files": ["bin/pwd"],
+  "docs": ["docs/pwd.md"]
 }

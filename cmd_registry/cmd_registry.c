@@ -1,5 +1,6 @@
 #include <string.h>
 #include "cmd_registry.h"
+#include "argtable3.h"
 #include "cmd_help.h"
 #include "cmd_exit.h"
 #include "cmd_cd.h"
@@ -16,6 +17,90 @@
 #include "cmd_mkdir.h"
 #include "cmd_rmdir.h"
 #include "cmd_touch.h"
+
+/* ── JSON help output ──────────────────────────────────────────────────── */
+
+/* Write a JSON string literal to out, or JSON null if s is NULL */
+void cmd_json_str(FILE *out, const char *s)
+{
+    if (s == NULL)
+    {
+        fputs("null", out);
+        return;
+    }
+    fputc('"', out);
+    for (; *s; s++)
+    {
+        unsigned char c = (unsigned char)*s;
+        if      (c == '"')  { fputs("\\\"", out); }
+        else if (c == '\\') { fputs("\\\\", out); }
+        else if (c == '\n') { fputs("\\n",  out); }
+        else if (c == '\r') { fputs("\\r",  out); }
+        else if (c == '\t') { fputs("\\t",  out); }
+        else if (c < 0x20)  { fprintf(out, "\\u%04x", c); }
+        else                { fputc(c, out); }
+    }
+    fputc('"', out);
+}
+
+/*
+ * cmd_print_help_json - Print command help as a JSON object.
+ *
+ * Emits a JSON object to 'out' with the command's name, summary, long_help,
+ * and an options array derived from the argtable3 argument definitions.
+ *
+ * Input:
+ *   out       - Output stream.
+ *   name      - Command name.
+ *   summary   - One-line description.
+ *   long_help - Full description (may be NULL).
+ *   argtable  - NULL-terminated argtable3 array for the command.
+ */
+void cmd_print_help_json(FILE *out, const char *name, const char *summary,
+                         const char *long_help, void **argtable)
+{
+    fprintf(out, "{\n");
+    fprintf(out, "  \"name\": ");      cmd_json_str(out, name);      fprintf(out, ",\n");
+    fprintf(out, "  \"summary\": ");   cmd_json_str(out, summary);   fprintf(out, ",\n");
+    fprintf(out, "  \"long_help\": "); cmd_json_str(out, long_help); fprintf(out, ",\n");
+    fprintf(out, "  \"options\": [\n");
+
+    int first = 1;
+    for (int i = 0; argtable[i] != NULL; i++)
+    {
+        arg_hdr_t *hdr = (arg_hdr_t *)argtable[i];
+        if (hdr->flag & ARG_TERMINATOR) break;
+
+        if (!first) fprintf(out, ",\n");
+        first = 0;
+
+        fprintf(out, "    {");
+        fprintf(out, "\"short\": ");
+        if (hdr->shortopts && hdr->shortopts[0])
+            cmd_json_str(out, hdr->shortopts);
+        else
+            fputs("null", out);
+
+        fprintf(out, ", \"long\": ");
+        if (hdr->longopts && hdr->longopts[0])
+            cmd_json_str(out, hdr->longopts);
+        else
+            fputs("null", out);
+
+        fprintf(out, ", \"datatype\": ");
+        cmd_json_str(out, hdr->datatype);
+
+        fprintf(out, ", \"description\": ");
+        cmd_json_str(out, hdr->glossary);
+
+        fprintf(out, ", \"required\": %s", hdr->mincount > 0 ? "true" : "false");
+        fprintf(out, "}");
+    }
+
+    fprintf(out, "\n  ]\n}\n");
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
 
 #define MAX_COMMANDS 64
 

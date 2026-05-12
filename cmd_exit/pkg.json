@@ -3,5 +3,6 @@
   "version": "1.0.0",
   "description": "exit the shell",
   "long_description": "Exit the CoreShell immediately.",
-  "docs": "docs/exit.md"
+  "files": ["bin/exit"],
+  "docs": ["docs/exit.md"]
 }

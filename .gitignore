@@ -33,6 +33,7 @@
 *.out
 *.app
 CoreShell
+bin/
 test_runner
 *.i*86
 *.x86_64

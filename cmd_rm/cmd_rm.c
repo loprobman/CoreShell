@@ -25,6 +25,8 @@
 /* ── argtable builder ──────────────────────────────────────────────────── */
 
 static void build_rm_argtable(struct arg_lit  **help,
+                               struct arg_lit  **help_json,
+                               struct arg_lit  **json,
                                struct arg_lit  **recursive,
                                struct arg_lit  **force,
                                struct arg_lit  **verbose,
@@ -32,21 +34,25 @@ static void build_rm_argtable(struct arg_lit  **help,
                                struct arg_end  **end,
                                void           ***argtable_out)
 {
-    *help      = arg_lit0("h", "help",      "show this help and exit");
-    *recursive = arg_lit0("r", "recursive", "remove directories recursively");
-    *force     = arg_lit0("f", "force",     "ignore nonexistent files, no error");
-    *verbose   = arg_lit0("v", "verbose",   "explain what is being done");
+    *help      = arg_lit0("h", "help",       "show this help and exit");
+    *help_json = arg_lit0(NULL, "help-json",  "print argument schema as JSON and exit");
+    *json      = arg_lit0(NULL, "json",        "output result as JSON");
+    *recursive = arg_lit0("r", "recursive",   "remove directories recursively");
+    *force     = arg_lit0("f", "force",         "ignore nonexistent files, no error");
+    *verbose   = arg_lit0("v", "verbose",       "explain what is being done");
     *files     = arg_filen(NULL, NULL, "<file>", 1, 64, "files or directories to remove");
     *end       = arg_end(20);
 
-    static void *argtable[7];
+    static void *argtable[9];
     argtable[0] = *help;
-    argtable[1] = *recursive;
-    argtable[2] = *force;
-    argtable[3] = *verbose;
-    argtable[4] = *files;
-    argtable[5] = *end;
-    argtable[6] = NULL;
+    argtable[1] = *help_json;
+    argtable[2] = *json;
+    argtable[3] = *recursive;
+    argtable[4] = *force;
+    argtable[5] = *verbose;
+    argtable[6] = *files;
+    argtable[7] = *end;
+    argtable[8] = NULL;
     *argtable_out = argtable;
 }
 
@@ -106,6 +112,8 @@ static int remove_recursive(const char *path, int force, int verbose)
 int rm_run(int argc, char **argv)
 {
     struct arg_lit  *help;
+    struct arg_lit  *help_json;
+    struct arg_lit  *json;
     struct arg_lit  *recursive;
     struct arg_lit  *force;
     struct arg_lit  *verbose;
@@ -113,22 +121,32 @@ int rm_run(int argc, char **argv)
     struct arg_end  *end;
     void           **argtable;
 
-    build_rm_argtable(&help, &recursive, &force, &verbose, &files, &end,
+    build_rm_argtable(&help, &help_json, &json, &recursive, &force, &verbose, &files, &end,
                       &argtable);
 
-    // Parse command-line arguments and handle help/errors
     int nerrors = arg_parse(argc, argv, argtable);
 
     if (help->count > 0)
     {
-        arg_freetable(argtable, 6);
+        arg_freetable(argtable, 8);
         rm_print_usage(stdout);
+        return 0;
+    }
+    if (help_json->count > 0)
+    {
+        cmd_print_help_json(stdout, "rm",
+                            "remove files or directories",
+                            "Remove one or more files or directories. Use -r to remove directories "
+                            "and their contents recursively. Use -f to suppress errors for nonexistent "
+                            "files. Use -v to report each removed file or directory.",
+                            argtable);
+        arg_freetable(argtable, 8);
         return 0;
     }
     if (nerrors > 0)
     {
         arg_print_errors(stdout, end, "rm");
-        arg_freetable(argtable, 6);
+        arg_freetable(argtable, 8);
         rm_print_usage(stdout);
         return 1;
     }
@@ -159,7 +177,20 @@ int rm_run(int argc, char **argv)
         }
     }
 
-    arg_freetable(argtable, 6);
+    if (json->count > 0)
+    {
+        printf("{\n  \"status\": ");
+        cmd_json_str(stdout, ret == 0 ? "ok" : "error");
+        printf(",\n  \"removed\": [");
+        for (int i = 0; i < files->count; i++)
+        {
+            if (i > 0) printf(", ");
+            cmd_json_str(stdout, files->filename[i]);
+        }
+        printf("]\n}\n");
+    }
+
+    arg_freetable(argtable, 8);
     return ret;
 }
 
@@ -168,6 +199,8 @@ int rm_run(int argc, char **argv)
 void rm_print_usage(FILE *out)
 {
     struct arg_lit  *help;
+    struct arg_lit  *help_json;
+    struct arg_lit  *json;
     struct arg_lit  *recursive;
     struct arg_lit  *force;
     struct arg_lit  *verbose;
@@ -175,17 +208,22 @@ void rm_print_usage(FILE *out)
     struct arg_end  *end;
     void           **argtable;
 
-    build_rm_argtable(&help, &recursive, &force, &verbose, &files, &end,
+    build_rm_argtable(&help, &help_json, &json, &recursive, &force, &verbose, &files, &end,
                       &argtable);
 
     fprintf(out, "\nUsage: rm ");
     arg_print_syntax(out, argtable, "\n");
     fprintf(out, "\nRemove files or directories.\n");
+    fprintf(out, "Use -r to remove a directory and all its contents recursively.\n");
+    fprintf(out, "Use -f to suppress errors for nonexistent files. Use -v to report each removal.\n");
     fprintf(out, "\nOptions:\n");
     arg_print_glossary(out, argtable, "  %-22s %s\n");
+    fprintf(out, "\nExamples:\n");
+    fprintf(out, "  rm file.txt\n");
+    fprintf(out, "  rm -rf tmpdir/\n");
     fprintf(out, "\n");
 
-    arg_freetable(argtable, 6);
+    arg_freetable(argtable, 8);
 }
 
 /* ── spec + registration ───────────────────────────────────────────────── */
@@ -194,8 +232,9 @@ cmd_spec_t cmd_rm_spec =
 {
     .name        = "rm",
     .summary     = "remove files or directories",
-    .long_help   = "Remove one or more files. Use -r to remove directories "
-                   "recursively.",
+    .long_help   = "Remove one or more files or directories. Use -r to remove directories "
+                   "and their contents recursively. Use -f to suppress errors for nonexistent "
+                   "files. Use -v to report each removed file or directory.",
     .run         = rm_run,
     .print_usage = rm_print_usage,
 };

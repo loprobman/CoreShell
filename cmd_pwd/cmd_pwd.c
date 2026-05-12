@@ -10,25 +10,30 @@
 /* ── argtable builder ──────────────────────────────────────────────────── */
 
 static void build_pwd_argtable(struct arg_lit **help,
+                               struct arg_lit **help_json,
+                               struct arg_lit **json,
                                struct arg_lit **logical,
                                struct arg_lit **physical,
                                struct arg_end **end,
                                void          ***argtable_out)
 {
-    *help     = arg_lit0("h", "help",
-                         "show this help and exit");
-    *logical  = arg_lit0("L", "logical",
-                         "use $PWD from environment (may contain symlinks)");
-    *physical = arg_lit0("P", "physical",
-                         "print physical path, resolving all symlinks");
-    *end      = arg_end(20);
+    *help      = arg_lit0("h", "help",      "show this help and exit");
+    *help_json = arg_lit0(NULL, "help-json",  "print argument schema as JSON and exit");
+    *json      = arg_lit0(NULL, "json",       "output result as JSON");
+    *logical   = arg_lit0("L", "logical",
+                          "use $PWD from environment (may contain symlinks)");
+    *physical  = arg_lit0("P", "physical",
+                          "print physical path, resolving all symlinks");
+    *end       = arg_end(20);
 
-    static void *argtable[5];
+    static void *argtable[7];
     argtable[0] = *help;
-    argtable[1] = *logical;
-    argtable[2] = *physical;
-    argtable[3] = *end;
-    argtable[4] = NULL;
+    argtable[1] = *help_json;
+    argtable[2] = *json;
+    argtable[3] = *logical;
+    argtable[4] = *physical;
+    argtable[5] = *end;
+    argtable[6] = NULL;
     *argtable_out = argtable;
 }
 
@@ -50,26 +55,38 @@ static void build_pwd_argtable(struct arg_lit **help,
 int pwd_run(int argc, char **argv)
 {
     struct arg_lit *help;
+    struct arg_lit *help_json;
+    struct arg_lit *json;
     struct arg_lit *logical;
     struct arg_lit *physical;
     struct arg_end *end;
     void          **argtable;
 
-    build_pwd_argtable(&help, &logical, &physical, &end, &argtable);
+    build_pwd_argtable(&help, &help_json, &json, &logical, &physical, &end, &argtable);
 
-    // Parse command-line arguments and handle help/errors
     int nerrors = arg_parse(argc, argv, argtable);
 
     if (help->count > 0)
     {
-        arg_freetable(argtable, 4);
+        arg_freetable(argtable, 6);
         pwd_print_usage(stdout);
+        return 0;
+    }
+    if (help_json->count > 0)
+    {
+        cmd_print_help_json(stdout, "pwd",
+                            "print working directory",
+                            "Print the absolute path of the current working directory. "
+                            "By default uses getcwd(3) to return the physical path with symlinks resolved. "
+                            "Use -L to return the logical $PWD from the environment, which may contain symlinks.",
+                            argtable);
+        arg_freetable(argtable, 6);
         return 0;
     }
     if (nerrors > 0)
     {
         arg_print_errors(stdout, end, "pwd");
-        arg_freetable(argtable, 4);
+        arg_freetable(argtable, 6);
         pwd_print_usage(stdout);
         return 1;
     }
@@ -80,8 +97,17 @@ int pwd_run(int argc, char **argv)
         const char *env_pwd = getenv("PWD");
         if (env_pwd != NULL)
         {
-            printf("%s\n", env_pwd);
-            arg_freetable(argtable, 4);
+            if (json->count > 0)
+            {
+                printf("{\n  \"path\": ");
+                cmd_json_str(stdout, env_pwd);
+                printf("\n}\n");
+            }
+            else
+            {
+                printf("%s\n", env_pwd);
+            }
+            arg_freetable(argtable, 6);
             return 0;
         }
     }
@@ -91,12 +117,22 @@ int pwd_run(int argc, char **argv)
     if (getcwd(cwd, sizeof(cwd)) == NULL)
     {
         perror("pwd");
-        arg_freetable(argtable, 4);
+        arg_freetable(argtable, 6);
         return 1;
     }
-    printf("%s\n", cwd);
 
-    arg_freetable(argtable, 4);
+    if (json->count > 0)
+    {
+        printf("{\n  \"path\": ");
+        cmd_json_str(stdout, cwd);
+        printf("\n}\n");
+    }
+    else
+    {
+        printf("%s\n", cwd);
+    }
+
+    arg_freetable(argtable, 6);
     return 0;
 }
 
@@ -105,21 +141,25 @@ int pwd_run(int argc, char **argv)
 void pwd_print_usage(FILE *out)
 {
     struct arg_lit *help;
+    struct arg_lit *help_json;
+    struct arg_lit *json;
     struct arg_lit *logical;
     struct arg_lit *physical;
     struct arg_end *end;
     void          **argtable;
 
-    build_pwd_argtable(&help, &logical, &physical, &end, &argtable);
+    build_pwd_argtable(&help, &help_json, &json, &logical, &physical, &end, &argtable);
 
     fprintf(out, "\nUsage: pwd ");
     arg_print_syntax(out, argtable, "\n");
     fprintf(out, "\nPrint the absolute path of the current working directory.\n");
+    fprintf(out, "Default behaviour uses getcwd(3) (physical path, symlinks resolved).\n");
+    fprintf(out, "Use -L to return the logical $PWD value, which may contain unresolved symlinks.\n");
     fprintf(out, "\nOptions:\n");
-    arg_print_glossary(out, argtable, "  %%-22s %s\n");
+    arg_print_glossary(out, argtable, "  %-22s %s\n");
     fprintf(out, "\n");
 
-    arg_freetable(argtable, 4);
+    arg_freetable(argtable, 6);
 }
 
 /* ── spec + registration ───────────────────────────────────────────────── */
@@ -128,7 +168,9 @@ cmd_spec_t cmd_pwd_spec =
 {
     .name        = "pwd",
     .summary     = "print working directory",
-    .long_help   = "Displays the absolute path of the current directory.",
+    .long_help   = "Print the absolute path of the current working directory. "
+                   "By default uses getcwd(3) to return the physical path with symlinks resolved. "
+                   "Use -L to return the logical $PWD from the environment, which may contain symlinks.",
     .run         = pwd_run,
     .print_usage = pwd_print_usage,
 };

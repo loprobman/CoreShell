@@ -3,5 +3,6 @@
   "version": "1.0.0",
   "description": "remove empty directories",
   "long_description": "Remove one or more empty directories. Use -p to also remove parent directories if they become empty.",
-  "docs": "docs/rmdir.md"
+  "files": ["bin/rmdir"],
+  "docs": ["docs/rmdir.md"]
 }

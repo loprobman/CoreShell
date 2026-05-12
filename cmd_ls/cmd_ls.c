@@ -14,30 +14,101 @@
 /* ── argtable builder ──────────────────────────────────────────────────── */
 
 static void build_ls_argtable(struct arg_lit  **help,
+                               struct arg_lit  **help_json,
+                               struct arg_lit  **json,
                                struct arg_lit  **all,
                                struct arg_lit  **long_fmt,
                                struct arg_file **paths,
                                struct arg_end  **end,
                                void           ***argtable_out)
 {
-    *help     = arg_lit0("h", "help",  "show this help and exit");
-    *all      = arg_lit0("a", "all",   "include hidden entries (starting with .)");
-    *long_fmt = arg_lit0("l", "long",  "use long listing format");
-    *paths    = arg_file0(NULL, NULL, "[path]",
-                          "directory to list (default: .)");
-    *end      = arg_end(20);
+    *help      = arg_lit0("h", "help",       "show this help and exit");
+    *help_json = arg_lit0(NULL, "help-json",  "print argument schema as JSON and exit");
+    *json      = arg_lit0(NULL, "json",       "output directory listing as JSON");
+    *all       = arg_lit0("a", "all",         "include hidden entries (starting with .)");
+    *long_fmt  = arg_lit0("l", "long",        "use long listing format");
+    *paths     = arg_file0(NULL, NULL, "[path]",
+                           "directory to list (default: .)");
+    *end       = arg_end(20);
 
-    static void *argtable[6];
+    static void *argtable[8];
     argtable[0] = *help;
-    argtable[1] = *all;
-    argtable[2] = *long_fmt;
-    argtable[3] = *paths;
-    argtable[4] = *end;
-    argtable[5] = NULL;
+    argtable[1] = *help_json;
+    argtable[2] = *json;
+    argtable[3] = *all;
+    argtable[4] = *long_fmt;
+    argtable[5] = *paths;
+    argtable[6] = *end;
+    argtable[7] = NULL;
     *argtable_out = argtable;
 }
 
 /* ── helpers ───────────────────────────────────────────────────────────── */
+
+/* Emit s as a JSON string to stdout, escaping special characters */
+static void ls_json_str(const char *s)
+{
+    putchar('"');
+    for (; *s; s++)
+    {
+        unsigned char c = (unsigned char)*s;
+        if      (c == '"')  { fputs("\\\"", stdout); }
+        else if (c == '\\') { fputs("\\\\", stdout); }
+        else if (c == '\n') { fputs("\\n",  stdout); }
+        else if (c == '\r') { fputs("\\r",  stdout); }
+        else if (c == '\t') { fputs("\\t",  stdout); }
+        else if (c < 0x20)  { printf("\\u%04x", c); }
+        else                { putchar(c); }
+    }
+    putchar('"');
+}
+
+/* Output the directory listing at dir_path as JSON */
+static int print_json_listing(const char *dir_path, int show_all)
+{
+    DIR *dir = opendir(dir_path);
+    if (dir == NULL) { perror("ls"); return 1; }
+
+    printf("{\n  \"path\": ");
+    ls_json_str(dir_path);
+    printf(",\n  \"entries\": [");
+
+    struct dirent *entry;
+    int first = 1;
+    while ((entry = readdir(dir)) != NULL)
+    {
+        if (entry->d_name[0] == '.' && !show_all)
+            continue;
+
+        char full[4096];
+        if (strcmp(dir_path, ".") == 0)
+            snprintf(full, sizeof(full), "%s", entry->d_name);
+        else
+            snprintf(full, sizeof(full), "%s/%s", dir_path, entry->d_name);
+
+        struct stat st;
+        long sz = 0;
+        const char *type = "unknown";
+        if (lstat(full, &st) == 0)
+        {
+            sz = (long)st.st_size;
+            if      (S_ISDIR(st.st_mode)) type = "directory";
+            else if (S_ISREG(st.st_mode)) type = "file";
+            else if (S_ISLNK(st.st_mode)) type = "symlink";
+            else                           type = "other";
+        }
+
+        if (!first) printf(",");
+        printf("\n    {\"name\": ");
+        ls_json_str(entry->d_name);
+        printf(", \"type\": \"%s\", \"size\": %ld}", type, sz);
+        first = 0;
+    }
+    if (!first) printf("\n  ");
+    printf("]\n}\n");
+    closedir(dir);
+    return 0;
+}
 
 /* Build a 10-char permission string from a mode_t */
 static void format_mode(mode_t mode, char *buf)
@@ -138,38 +209,57 @@ static void print_long(const char *dir_path, const char *name)
 int ls_run(int argc, char **argv)
 {
     struct arg_lit  *help;
+    struct arg_lit  *help_json;
+    struct arg_lit  *json;
     struct arg_lit  *all;
     struct arg_lit  *long_fmt;
     struct arg_file *paths;
     struct arg_end  *end;
     void           **argtable;
 
-    build_ls_argtable(&help, &all, &long_fmt, &paths, &end, &argtable);
+    build_ls_argtable(&help, &help_json, &json, &all, &long_fmt, &paths, &end, &argtable);
 
-    // Parse command-line arguments and handle help/errors
     int nerrors = arg_parse(argc, argv, argtable);
 
     if (help->count > 0)
     {
-        arg_freetable(argtable, 5);
+        arg_freetable(argtable, 7);
         ls_print_usage(stdout);
+        return 0;
+    }
+    if (help_json->count > 0)
+    {
+        cmd_print_help_json(stdout, "ls",
+                            "list directory contents",
+                            "List entries in the specified directory (default: current directory). "
+                            "Use -a to include hidden entries (names beginning with '.'). "
+                            "Use -l for a long listing showing permissions, owner, size, and modification time.",
+                            argtable);
+        arg_freetable(argtable, 7);
         return 0;
     }
     if (nerrors > 0)
     {
         arg_print_errors(stdout, end, "ls");
-        arg_freetable(argtable, 5);
+        arg_freetable(argtable, 7);
         ls_print_usage(stdout);
         return 1;
     }
 
     const char *dir_path = (paths->count > 0) ? paths->filename[0] : ".";
 
+    if (json->count > 0)
+    {
+        int ret = print_json_listing(dir_path, all->count);
+        arg_freetable(argtable, 7);
+        return ret;
+    }
+
     DIR *dir = opendir(dir_path);
     if (dir == NULL)
     {
         perror("ls");
-        arg_freetable(argtable, 5);
+        arg_freetable(argtable, 7);
         return 1;
     }
 
@@ -198,7 +288,7 @@ int ls_run(int argc, char **argv)
     }
 
     closedir(dir);
-    arg_freetable(argtable, 5);
+    arg_freetable(argtable, 7);
     return 0;
 }
 
@@ -207,22 +297,31 @@ int ls_run(int argc, char **argv)
 void ls_print_usage(FILE *out)
 {
     struct arg_lit  *help;
+    struct arg_lit  *help_json;
+    struct arg_lit  *json;
     struct arg_lit  *all;
     struct arg_lit  *long_fmt;
     struct arg_file *paths;
     struct arg_end  *end;
     void           **argtable;
 
-    build_ls_argtable(&help, &all, &long_fmt, &paths, &end, &argtable);
+    build_ls_argtable(&help, &help_json, &json, &all, &long_fmt, &paths, &end, &argtable);
 
     fprintf(out, "\nUsage: ls ");
     arg_print_syntax(out, argtable, "\n");
     fprintf(out, "\nList directory contents.\n");
+    fprintf(out, "Hidden entries (names starting with '.') are omitted by default; use -a to include them.\n");
+    fprintf(out, "Use -l for a long listing showing permissions, owner, size, and modification time.\n");
+    fprintf(out, "Use --json to output the listing as a JSON object with path and entries array.\n");
     fprintf(out, "\nOptions:\n");
     arg_print_glossary(out, argtable, "  %-22s %s\n");
+    fprintf(out, "\nExamples:\n");
+    fprintf(out, "  ls\n");
+    fprintf(out, "  ls -la /etc\n");
+    fprintf(out, "  ls --json /tmp\n");
     fprintf(out, "\n");
 
-    arg_freetable(argtable, 5);
+    arg_freetable(argtable, 7);
 }
 
 /* ── spec + registration ───────────────────────────────────────────────── */
@@ -231,8 +330,9 @@ cmd_spec_t cmd_ls_spec =
 {
     .name        = "ls",
     .summary     = "list directory contents",
-    .long_help   = "List information about entries in the specified directory "
-                   "(default: current directory).",
+    .long_help   = "List entries in the specified directory (default: current directory). "
+                   "Use -a to include hidden entries (names beginning with '.'). "
+                   "Use -l for a long listing showing permissions, owner, size, and modification time.",
     .run         = ls_run,
     .print_usage = ls_print_usage,
 };

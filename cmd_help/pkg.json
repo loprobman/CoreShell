@@ -3,5 +3,6 @@
   "version": "1.0.0",
   "description": "show help for built-in commands",
   "long_description": "Display a list of all built-in commands, or detailed help for a specific command.",
-  "docs": "docs/help.md"
+  "files": ["bin/help"],
+  "docs": ["docs/help.md"]
 }
