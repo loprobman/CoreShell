@@ -2,7 +2,7 @@
   "name": "head",
   "version": "1.0.0",
   "description": "print the first lines of a file",
-  "long_description": "Output the first N lines (default: 10) of the given file.",
+  "long_description": "Output the first N lines (default: 10) of the given file. Use -n to specify a different line count.",
   "files": ["bin/head"],
   "docs": ["docs/head.md"]
 }

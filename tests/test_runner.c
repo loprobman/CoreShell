@@ -104,7 +104,7 @@ static const char *make_desc(const char *fmt, const char *arg)
 static const char *s_commands[] = {
     "ls",  "cat",   "cd",    "cp",    "echo",  "exit",
     "head","help",  "mkdir", "mv",    "pwd",   "rm",
-    "rmdir","stat", "tail",  "touch"
+    "rmdir","stat", "tail",  "touch", "pkg"
 };
 #define N_COMMANDS (int)(sizeof(s_commands) / sizeof(s_commands[0]))
 
@@ -995,6 +995,10 @@ static void test_pkg_binary(void)
         "pkg: install of nonexistent archive returns error",
         {"./pkg/pkg", "install", "/tmp/no_such_pkg_coreshell_99.tar.gz", NULL},
         EXPECT_FAIL, NULL, NULL
+    });
+    run_shell_test(&(test_case_t){
+        "pkg: CoreShell multicall dispatch supports pkg --help",
+        {"./CoreShell", "pkg", "--help", NULL}, 0, "check-update", NULL
     });
     /* compile --dry-run should mention docs and pkg.json without building */
     run_shell_test(&(test_case_t){

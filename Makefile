@@ -21,7 +21,8 @@ INCLUDES = \
     -Icmd_rm \
     -Icmd_mkdir \
     -Icmd_rmdir \
-    -Icmd_touch
+    -Icmd_touch \
+    -Icmd_pkg
 
 TARGET = CoreShell
 
@@ -43,17 +44,27 @@ SRC = main.c \
       cmd_rm/cmd_rm.c \
       cmd_mkdir/cmd_mkdir.c \
       cmd_rmdir/cmd_rmdir.c \
-      cmd_touch/cmd_touch.c
+    cmd_touch/cmd_touch.c \
+    cmd_pkg/cmd_pkg.c \
+    pkg/pkg.c
 
 OBJ = $(SRC:.c=.o)
 
 PKG_TARGET = pkg/pkg
 PKG_SRC    = pkg/pkg.c
 
-all: $(TARGET) $(PKG_TARGET)
+LLM_TARGET = coresh_llm
+LLM_SRC    = coresh_llm.c
+
+all: $(TARGET) $(PKG_TARGET) $(LLM_TARGET)
 
 $(PKG_TARGET): $(PKG_SRC)
 	$(CC) $(CFLAGS) -o $(PKG_TARGET) $(PKG_SRC)
+
+$(LLM_TARGET): $(LLM_SRC)
+	$(CC) $(CFLAGS) -o $(LLM_TARGET) $(LLM_SRC)
+
+pkg/pkg.o: CFLAGS += -DPKG_NO_MAIN
 
 $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $(TARGET) $(OBJ) -lm
@@ -65,7 +76,7 @@ debug: CFLAGS += -g -O0
 debug: clean $(TARGET)
 
 clean:
-	rm -f $(OBJ) $(TARGET) $(PKG_TARGET) $(TEST_OBJ) $(TEST_BIN) test_report.md test_output.log
+	rm -f $(OBJ) $(TARGET) $(PKG_TARGET) $(LLM_TARGET) $(TEST_OBJ) $(TEST_BIN) test_report.md test_output.log
 	rm -rf bin/ build/
 
 # ── Test runner ──────────────────────────────────────────────────────── #

@@ -17,6 +17,7 @@
 #include "cmd_mkdir.h"
 #include "cmd_rmdir.h"
 #include "cmd_touch.h"
+#include "cmd_pkg.h"
 
 /* ── JSON help output ──────────────────────────────────────────────────── */
 
@@ -206,4 +207,5 @@ void register_all_builtin_commands(void)
     register_mkdir_command();
     register_rmdir_command();
     register_touch_command();
+    register_pkg_command();
 }
