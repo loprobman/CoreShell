@@ -18,6 +18,8 @@
 #include "cmd_rmdir.h"
 #include "cmd_touch.h"
 #include "cmd_pkg.h"
+#include "cmd_jobs.h"
+#include "cmd_kill.h"
 
 /* ── JSON help output ──────────────────────────────────────────────────── */
 
@@ -208,4 +210,6 @@ void register_all_builtin_commands(void)
     register_rmdir_command();
     register_touch_command();
     register_pkg_command();
+    register_jobs_command();
+    register_kill_command();
 }

@@ -35,6 +35,7 @@
 
 #include "cmd_registry.h"
 #include "cmd_spec.h"
+#include "cmd_jobs.h"
 
 /* ── Configuration ───────────────────────────────────────────────────── */
 
@@ -104,7 +105,7 @@ static const char *make_desc(const char *fmt, const char *arg)
 static const char *s_commands[] = {
     "ls",  "cat",   "cd",    "cp",    "echo",  "exit",
     "head","help",  "mkdir", "mv",    "pwd",   "rm",
-    "rmdir","stat", "tail",  "touch", "pkg"
+    "rmdir","stat", "tail",  "touch", "pkg",   "jobs",  "kill"
 };
 #define N_COMMANDS (int)(sizeof(s_commands) / sizeof(s_commands[0]))
 
@@ -1272,6 +1273,42 @@ static void write_text_log(const char *filepath)
 }
 
 /* ── Entry point ─────────────────────────────────────────────────────── */
+/* ---- jobs and kill --------------------------------------------------- */
+/*
+ * Tests the jobs builtin (empty table, then with no-running jobs) and
+ * the kill builtin (--help, invalid job, valid signal name).
+ * Note: these tests call the command run() directly, not through the REPL,
+ * so background job lifecycle (SIGCHLD/job_add) is not exercised here —
+ * that is covered by the interactive examples in Processes.md.
+ */
+static void test_jobs(void)
+{
+    /* jobs: prints "No background jobs." when table is empty */
+    run_test(&(test_case_t){
+        "jobs: prints no-jobs message when table is empty",
+        {"jobs", NULL}, 0, "No background jobs.", NULL
+    });
+
+    /* jobs: --help prints usage */
+    run_test(&(test_case_t){
+        "jobs: --help prints usage line",
+        {"jobs", "--help", NULL}, 0, "Usage", NULL
+    });
+
+    /* kill: --help prints usage */
+    run_test(&(test_case_t){
+        "kill: --help prints usage line",
+        {"kill", "--help", NULL}, 0, "Usage", NULL
+    });
+
+    /* kill: invalid job reference returns non-zero */
+    run_test(&(test_case_t){
+        "kill: unknown job %99 returns error",
+        {"kill", "%99", NULL}, EXPECT_FAIL, NULL, "no such job"
+    });
+}
+
+/* ── Entry point ─────────────────────────────────────────────────────── */
 
 int main(void)
 {
@@ -1314,6 +1351,9 @@ int main(void)
     test_json_flags();
     test_pkg_binary();
     test_compile_output();
+
+    /* Week-Five: process management */
+    test_jobs();
 
     /* Print terminal summary */
     print_terminal_report();

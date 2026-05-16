@@ -91,13 +91,14 @@ Both files are regenerated on every run and removed by `make clean`.
 | `test_mkdir` | 3 | create, existing dir error, `--help` |
 | `test_rmdir` | 3 | remove empty, error, `--help` |
 | `test_touch` | 3 | create, update timestamp, `--help` |
-| `test_cmd_spec_metadata` | 17 | all 17 commands have name, summary, long_help, run, print_usage set |
+| `test_cmd_spec_metadata` | 19 | all 19 commands have name, summary, long_help, run, print_usage set |
 | `test_pkg_json` | 17 | all 17 `pkg.json` files contain all 6 required fields (incl. `files`) |
 | `test_docs_md` | 17 | all 17 `docs/<name>.md` files contain `## Usage` and `## Options` |
 | `test_multicall_dispatch` | 6 | Mode 2 (argv[1]), unknown command error, Mode 1 (symlink) |
 | `test_pwd_help_format` | 2 | `--logical` and `--physical` appear in help (format bug regression) |
 | `test_json_flags` | 6 | `--help-json` emits schema with `name`/`options`; `--json` emits result key |
 | `test_pkg_binary` | 5 | `pkg --help`, `pkg list`, `pkg build` (missing args error), `pkg install` (bad archive), multicall dispatch |
+| `test_jobs` | 4 | `jobs` with no jobs, `jobs` after background launch, `kill %N` terminates job, `kill --help` |
 
 ## Debugging
 
@@ -572,10 +573,18 @@ Ensure `~/.local/bin` is on your `PATH` (add `export PATH="$HOME/.local/bin:$PAT
 ## Implementation Details
 
 - **Input**: `fgets()` into a heap buffer; EOF triggers a clean exit
-- **Parsing**: `strtok()` splits on space, tab, and newline
-- **Dispatch**: multicall check → registry lookup → `spec->run(argc, argv)`; unknown → error message
-- **No fork/exec**: all commands are built-in; no external process spawning
-- **Signals**: `SIGINT` (Ctrl-C) sets a flag and re-displays the prompt; it does not exit
+- **Input**: `fgets()` into a heap buffer; EOF triggers a clean exit
+- **Parsing**: quote-aware token scanner supporting single/double quotes and backslash escapes
+- **Variable expansion**: `$VAR` and `${VAR}` expanded on every input line before routing, including inside double quotes
+- **Dispatch**: multicall check → registry lookup → `spec->run(argc, argv)`; unknown → external fork/execvp
+- **External commands**: `fork()` + `execvp()` with `waitpid()` in the foreground path
+- **Pipelines**: up to 16 stages connected by `pipe()` + `dup2()`; quote-aware `|` splitting so `echo "a | b"` is not split
+- **Redirection** (applied left-to-right, POSIX semantics): `<`, `>`, `>>`, `2>`, `2>>`, `2>&1`; compact no-space forms supported
+- **Background jobs** (`&`): trailing `&` detaches the pipeline; SIGCHLD blocked around fork→job_add to prevent races; `[Done]` notifications at next REPL prompt
+- **Signals**:
+  - `SIGINT` (Ctrl-C): sets a flag and re-displays the prompt; does not exit
+  - `SIGCHLD`: `sigaction` handler reaps finished children with `waitpid(-1, WNOHANG)`; marks job table entries Done/Killed
+- **Job table**: 64-slot `bg_job_t` array in `main.c`, shared via `cmd_jobs.h` API
 - **Argument parsing**: vendored [argtable3](argtable3/) library used by every built-in
 
 ---
@@ -583,11 +592,11 @@ Ensure `~/.local/bin` is on your `PATH` (add `export PATH="$HOME/.local/bin:$PAT
 ## Project Structure
 
 ```
-main.c              # REPL loop, signal handling, registry dispatch, PATH setup
+main.c              # REPL loop, signal handling, job table, pipeline executor, registry dispatch
 Makefile            # Build configuration (all, debug, clean, test)
 README.md           # This file
 tests/
-  test_runner.c     # Automated C test runner (136 test cases)
+  test_runner.c     # Automated C test runner
 test_report.md      # Generated test report (created by make test)
 argtable3/          # Vendored argument-parsing library
 cmd_spec/           # cmd_spec_t typedef (header only)
@@ -609,6 +618,8 @@ cmd_mkdir/          # mkdir built-in
 cmd_rmdir/          # rmdir built-in
 cmd_touch/          # touch built-in
 cmd_pkg/            # pkg command module (built-in)
+cmd_jobs/           # jobs built-in (list background jobs)
+cmd_kill/           # kill built-in (send signal to pid or %jobid)
 pkg/                # pkg core + standalone wrapper binary
   pkg.c             # shared pkg implementation + standalone main wrapper
   pkg.h             # pkg_run / pkg_print_usage public interface
@@ -722,3 +733,76 @@ Use `--dry-run` to preview the planned steps without executing any build or writ
 ```
 
 The `bin/<name> --help-json` output comes from the upgraded wrapper binary that `pkg compile` generates: it calls `register_<name>_command()` at startup so the `cmd_spec_t` is populated, then emits a real JSON object when `--help-json` is requested.
+
+---
+
+## Pipeline, Redirection, and Background Jobs
+
+### Pipelines
+
+```bash
+# Two-stage pipeline
+/bin/ls | /bin/grep main
+
+# Three-stage pipeline
+/bin/cat README.md | /bin/grep -i shell | /bin/head -n 5
+
+# Quoted | is NOT treated as a pipe separator
+echo "a | b"
+```
+
+### Redirection
+
+```bash
+echo hello > /tmp/out.txt        # stdout truncate
+echo world >> /tmp/out.txt       # stdout append
+/bin/ls /bad 2>/tmp/err.txt      # stderr truncate
+/bin/ls /bad 2>>/tmp/err.txt     # stderr append
+/bin/ls /bad > /tmp/all.txt 2>&1 # stdout+stderr to file (POSIX left-to-right)
+/bin/cat < /tmp/out.txt          # stdin redirection
+```
+
+### Background jobs & process management
+
+```bash
+/bin/sleep 5 &          # launch in background → [1] <pid>
+jobs                    # list active jobs
+kill %1                 # send SIGTERM to job 1
+kill -s KILL %1         # send SIGKILL to job 1
+# When job finishes, next prompt shows:
+# [1] Done        /bin/sleep 5
+```
+
+### Variable expansion
+
+```bash
+echo $HOME              # expands to /home/you
+echo ${USER}            # braced form
+/bin/echo "$PATH" | /bin/grep -o bin
+```
+
+### `jobs` built-in
+
+```
+Usage: jobs
+```
+
+Prints each background job: `[N] Running|Done|Killed  <pid>  <cmd>`. Done/Killed entries are consumed on display so they won't reappear.
+
+### `kill` built-in
+
+```
+Usage: kill [-s SIGNAL] <pid|%jobid> ...
+```
+
+| Flag / Arg | Description |
+|---|---|
+| `-s SIGNAL` | Signal name (`TERM`, `KILL`, `HUP`, etc.) or number |
+| `<pid>` | Numeric process ID |
+| `%N` | Job number from `jobs` output |
+
+```bash
+kill 1234           # SIGTERM to pid 1234
+kill %2             # SIGTERM to job 2
+kill -s KILL %1     # SIGKILL to job 1
+```
