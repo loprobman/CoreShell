@@ -119,6 +119,129 @@ static int dispatch_builtin(int argc, char *argv[])
     return 1;
 }
 
+/* ── LLM @ handling ────────────────────────────────────────────────────── */
+
+/*
+ * handle_llm_line - Process a natural language query prefixed with @
+ *
+ * This function:
+ * 1. Forks and execs the external helper program 'coresh_llm' with the query.
+ * 2. Reads the suggested shell command (one line) from coresh_llm's stdout.
+ * 3. Displays the suggested command to the user.
+ * 4. Asks for confirmation (Run this? (y/n)).
+ * 5. If confirmed, parses and executes the command via dispatch_builtin.
+ *
+ * Input:  query - natural language string (without the '@' prefix)
+ * Output: None (side effects: may execute a command, or print error/abort)
+ */
+static void handle_llm_line(const char *query)
+{
+    int pipe_fd[2];
+    pid_t pid;
+
+    /* Create a pipe for reading the child's stdout */
+    if (pipe(pipe_fd) < 0)
+    {
+        perror("pipe");
+        return;
+    }
+
+    /* Fork child process */
+    pid = fork();
+    if (pid < 0)
+    {
+        perror("fork");
+        close(pipe_fd[0]);
+        close(pipe_fd[1]);
+        return;
+    }
+
+    if (pid == 0)
+    {
+        /* Child process: set up to call coresh_llm */
+        close(pipe_fd[0]); /* Close read end in child */
+
+        /* Redirect stdout to the pipe */
+        if (dup2(pipe_fd[1], STDOUT_FILENO) < 0)
+        {
+            perror("dup2");
+            _exit(127);
+        }
+        close(pipe_fd[1]);
+
+        /* Exec coresh_llm with the query as an argument */
+        execvp("coresh_llm", (char *const[]){ "coresh_llm", (char *)query, NULL });
+
+        /* If execvp fails, exit with error code */
+        perror("coresh_llm");
+        _exit(127);
+    }
+
+    /* Parent process: read the suggested command */
+    close(pipe_fd[1]); /* Close write end in parent */
+
+    char suggested[BUFFER_SIZE];
+    ssize_t n = read(pipe_fd[0], suggested, sizeof(suggested) - 1);
+    close(pipe_fd[0]);
+
+    /* Wait for the child to complete */
+    int status;
+    waitpid(pid, &status, 0);
+
+    if (n <= 0)
+    {
+        fprintf(stderr, "CoreShell: no response from coresh_llm\n");
+        return;
+    }
+
+    /* Remove trailing newline from suggested command */
+    if (n > 0 && suggested[n - 1] == '\n')
+        n--;
+    suggested[n] = '\0';
+
+    if (n == 0)
+    {
+        fprintf(stderr, "CoreShell: coresh_llm returned empty response\n");
+        return;
+    }
+
+    /* Display the suggested command and ask for confirmation */
+    printf("Suggested command: %s\n", suggested);
+    printf("Run this? (y/n) ");
+    fflush(stdout);
+
+    char response[16];
+    if (fgets(response, sizeof(response), stdin) == NULL)
+    {
+        fprintf(stderr, "\nCancelled.\n");
+        return;
+    }
+
+    /* Check if user confirmed with 'y' or 'yes' */
+    if (response[0] != 'y' && response[0] != 'Y')
+    {
+        printf("Cancelled.\n");
+        return;
+    }
+
+    /* Parse and execute the suggested command */
+    char *suggested_copy = malloc(strlen(suggested) + 1);
+    if (suggested_copy == NULL)
+    {
+        perror("malloc");
+        return;
+    }
+    strcpy(suggested_copy, suggested);
+
+    char *args[MAX_ARGS];
+    int nargs = parse_command(suggested_copy, args);
+
+    if (nargs > 0)
+        dispatch_builtin(nargs, args);
+
+    free(suggested_copy);
+}
+
 /* ── main ──────────────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[])
@@ -205,6 +328,27 @@ int main(int argc, char *argv[])
         /* Skip blank lines */
         if (input[0] == '\0')
         {
+            free(input);
+            continue;
+        }
+
+        /* Check for LLM @ prefix */
+        if (input[0] == '@')
+        {
+            /* Extract the query (everything after '@') */
+            const char *query = input + 1;
+            /* Skip leading whitespace after @ */
+            while (*query && (*query == ' ' || *query == '\t'))
+                query++;
+
+            if (*query != '\0')
+            {
+                handle_llm_line(query);
+            }
+            else
+            {
+                fprintf(stderr, "CoreShell: @ requires a query\n");
+            }
             free(input);
             continue;
         }

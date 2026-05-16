@@ -27,6 +27,10 @@
 #include <dirent.h>
 #include <fcntl.h>
 
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
 /* ── constants ─────────────────────────────────────────────────────────── */
 
 #define CS_DIR   ".CoreShell"
@@ -47,6 +51,9 @@ typedef struct
     char files[MAX_FILES][256];
     int  nfiles;
 } pkg_meta_t;
+
+/* Forward declaration used by upgrade flow. */
+static int cmd_install(int argc, char **argv);
 
 /* ── path helpers ──────────────────────────────────────────────────────── */
 
@@ -355,6 +362,227 @@ static void pkgdb_remove(const char *name)
     fclose(fin);
     fclose(fout);
     rename(tmp, db);
+}
+
+/* ── registry/update helpers ──────────────────────────────────────────── */
+
+/*
+ * Fetch package metadata from the local registry.
+ * Returns:
+ *   0   success
+ *   404 package not found
+ *  -1   other error
+ */
+static int registry_fetch_package(const char *name,
+                                  char *latest, size_t latest_sz,
+                                  char *download_url, size_t url_sz)
+{
+    char url[1024];
+    snprintf(url, sizeof(url), "http://localhost:3000/packages/%s", name);
+
+    char response[32768];
+    char *curl_args[] = {
+        "curl",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--max-time", "15",
+        "--output", "-",
+        "--write-out", "\n%{http_code}",
+        url,
+        NULL
+    };
+
+    ssize_t n = capture_cmd(curl_args, response, sizeof(response));
+    if (n < 0 || response[0] == '\0')
+    {
+        fprintf(stderr, "pkg: failed to query registry for '%s'\n", name);
+        return -1;
+    }
+
+    char *status_line = strrchr(response, '\n');
+    if (!status_line)
+    {
+        fprintf(stderr, "pkg: unexpected registry response for '%s'\n", name);
+        return -1;
+    }
+
+    int status = atoi(status_line + 1);
+    *status_line = '\0';
+
+    if (status == 404) return 404;
+    if (status != 200)
+    {
+        fprintf(stderr, "pkg: registry returned HTTP %d for '%s'\n", status, name);
+        return -1;
+    }
+
+    if (!json_str(response, "latestVersion", latest, latest_sz) ||
+        !json_str(response, "downloadUrl", download_url, url_sz))
+    {
+        fprintf(stderr, "pkg: registry payload missing latestVersion/downloadUrl\n");
+        return -1;
+    }
+    return 0;
+}
+
+/* Read one dotted numeric version part and advance p. Missing/invalid => 0. */
+static long version_next_part(const char **p)
+{
+    if (!p || !*p || **p == '\0') return 0;
+
+    char *end = NULL;
+    long v = strtol(*p, &end, 10);
+    if (end == *p) v = 0;
+
+    while (**p && **p != '.') (*p)++;
+    if (**p == '.') (*p)++;
+    return v;
+}
+
+/* Returns -1 if a < b, 0 if equal, +1 if a > b (dotted numeric compare). */
+static int compare_versions(const char *a, const char *b)
+{
+    const char *pa = a ? a : "";
+    const char *pb = b ? b : "";
+
+    while (*pa || *pb)
+    {
+        long va = version_next_part(&pa);
+        long vb = version_next_part(&pb);
+        if (va < vb) return -1;
+        if (va > vb) return 1;
+    }
+    return 0;
+}
+
+/*
+ * Determine update state using pkgdb + registry.
+ * Returns:
+ *   1  update available
+ *   0  already up-to-date
+ *  -1  error
+ */
+static int resolve_update_state(const char *name,
+                                char *installed, size_t installed_sz,
+                                char *latest, size_t latest_sz,
+                                char *download_url, size_t url_sz)
+{
+    if (!pkgdb_find(name, installed, installed_sz))
+    {
+        fprintf(stderr, "pkg: '%s' is not installed\n", name);
+        return -1;
+    }
+
+    int rr = registry_fetch_package(name, latest, latest_sz, download_url, url_sz);
+    if (rr == 404)
+    {
+        fprintf(stderr, "pkg: package '%s' was not found in registry\n", name);
+        return -1;
+    }
+    if (rr != 0) return -1;
+
+    return compare_versions(installed, latest) < 0 ? 1 : 0;
+}
+
+/* pkg check-update <name> */
+static int cmd_check_update(int argc, char **argv)
+{
+    if (argc < 1)
+    {
+        fprintf(stderr, "Usage: pkg check-update <name>\n");
+        return 1;
+    }
+
+    const char *name = argv[0];
+    char installed[64], latest[64], download_url[1024];
+
+    int st = resolve_update_state(name,
+                                  installed, sizeof(installed),
+                                  latest, sizeof(latest),
+                                  download_url, sizeof(download_url));
+    if (st < 0) return 1;
+
+    if (st == 1)
+    {
+        printf("Update available for %s: %s -> %s\n", name, installed, latest);
+        return 0;
+    }
+
+    printf("%s is up to date (%s)\n", name, installed);
+    return 0;
+}
+
+/* pkg upgrade <name> */
+static int cmd_upgrade(int argc, char **argv)
+{
+    if (argc < 1)
+    {
+        fprintf(stderr, "Usage: pkg upgrade <name>\n");
+        return 1;
+    }
+
+    const char *name = argv[0];
+    char installed[64], latest[64], download_url[1024];
+
+    int st = resolve_update_state(name,
+                                  installed, sizeof(installed),
+                                  latest, sizeof(latest),
+                                  download_url, sizeof(download_url));
+    if (st < 0) return 1;
+
+    if (st == 0)
+    {
+        printf("No upgrade needed for %s (%s)\n", name, installed);
+        return 0;
+    }
+
+    char tmp_path[] = "/tmp/pkg_upgrade_XXXXXX";
+    int tmp_fd = mkstemp(tmp_path);
+    if (tmp_fd < 0)
+    {
+        perror("mkstemp");
+        return 1;
+    }
+    close(tmp_fd);
+
+    printf("Upgrading %s: %s -> %s\n", name, installed, latest);
+    printf("Downloading: %s\n", download_url);
+
+    char *curl_args[] = {
+        "curl",
+        "--fail",
+        "--location",
+        "--silent",
+        "--show-error",
+        "--max-time", "15",
+        "--output", tmp_path,
+        download_url,
+        NULL
+    };
+
+    if (run_cmd(curl_args) != 0)
+    {
+        fprintf(stderr, "pkg: failed to download update for '%s'\n", name);
+        unlink(tmp_path);
+        return 1;
+    }
+
+    char *install_args[] = { tmp_path, NULL };
+    int rc = cmd_install(1, install_args);
+    unlink(tmp_path);
+
+    if (rc != 0)
+    {
+        fprintf(stderr, "pkg: upgrade failed during install for '%s'\n", name);
+        return 1;
+    }
+
+    /* Keep one canonical record for this package in pkgdb. */
+    pkgdb_remove(name);
+    pkgdb_add(name, latest);
+    printf("Upgrade complete for %s (%s)\n", name, latest);
+    return 0;
 }
 
 /* ── recursive remove ──────────────────────────────────────────────────── */
@@ -1170,31 +1398,33 @@ static int cmd_compile(int argc, char **argv)
 
 /* ── usage ─────────────────────────────────────────────────────────────── */
 
-static void print_usage(void)
+void pkg_print_usage(FILE *out)
 {
-    printf("\nUsage: pkg <subcommand> [args...]\n\n");
-    printf("Subcommands:\n");
-    printf("  build <src-dir> <output.tar.gz>   package a directory into a .tar.gz\n");
-    printf("  install <archive.tar.gz>           install a package\n");
-    printf("  list                               list installed packages\n");
-    printf("  remove <name>                      remove an installed package\n");
-    printf("  compile [--dry-run] [dir]          build modules in dir (default: .)\n");
-    printf("\nInstall layout:\n");
-    printf("  ~/.CoreShell/pkgs/<name>-<version>/  extracted package contents\n");
-    printf("  ~/.CoreShell/bin/<name>              symlink to executable\n");
-    printf("  ~/.CoreShell/pkgdb.txt               installed package database\n\n");
-    printf("Compile outputs:\n");
-    printf("  bin/<name>              standalone executable\n");
-    printf("  build/lib<name>.a       static library for linking into the shell\n\n");
+    fprintf(out, "\nUsage: pkg <subcommand> [args...]\n\n");
+    fprintf(out, "Subcommands:\n");
+    fprintf(out, "  build <src-dir> <output.tar.gz>   package a directory into a .tar.gz\n");
+    fprintf(out, "  install <archive.tar.gz>           install a package\n");
+    fprintf(out, "  list                               list installed packages\n");
+    fprintf(out, "  remove <name>                      remove an installed package\n");
+    fprintf(out, "  check-update <name>                check for a newer package version\n");
+    fprintf(out, "  upgrade <name>                     download and install latest version\n");
+    fprintf(out, "  compile [--dry-run] [dir]          build modules in dir (default: .)\n");
+    fprintf(out, "\nInstall layout:\n");
+    fprintf(out, "  ~/.CoreShell/pkgs/<name>-<version>/  extracted package contents\n");
+    fprintf(out, "  ~/.CoreShell/bin/<name>              symlink to executable\n");
+    fprintf(out, "  ~/.CoreShell/pkgdb.txt               installed package database\n\n");
+    fprintf(out, "Compile outputs:\n");
+    fprintf(out, "  bin/<name>              standalone executable\n");
+    fprintf(out, "  build/lib<name>.a       static library for linking into the shell\n\n");
 }
 
 /* ── main ──────────────────────────────────────────────────────────────── */
 
-int main(int argc, char **argv)
+int pkg_run(int argc, char **argv)
 {
     if (argc < 2)
     {
-        print_usage();
+        pkg_print_usage(stdout);
         return 1;
     }
 
@@ -1231,17 +1461,42 @@ int main(int argc, char **argv)
         }
         return cmd_remove(argc - 2, argv + 2);
     }
+    if (strcmp(sub, "check-update") == 0)
+    {
+        if (argc < 3)
+        {
+            fprintf(stderr, "Usage: pkg check-update <name>\n");
+            return 1;
+        }
+        return cmd_check_update(argc - 2, argv + 2);
+    }
+    if (strcmp(sub, "upgrade") == 0)
+    {
+        if (argc < 3)
+        {
+            fprintf(stderr, "Usage: pkg upgrade <name>\n");
+            return 1;
+        }
+        return cmd_upgrade(argc - 2, argv + 2);
+    }
     if (strcmp(sub, "compile") == 0)
     {
         return cmd_compile(argc - 2, argv + 2);
     }
     if (strcmp(sub, "--help") == 0 || strcmp(sub, "-h") == 0)
     {
-        print_usage();
+        pkg_print_usage(stdout);
         return 0;
     }
 
     fprintf(stderr, "pkg: unknown subcommand '%s'\n", sub);
-    print_usage();
+    pkg_print_usage(stdout);
     return 1;
 }
+
+#ifndef PKG_NO_MAIN
+int main(int argc, char **argv)
+{
+    return pkg_run(argc, argv);
+}
+#endif

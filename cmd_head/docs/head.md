@@ -1,24 +1,29 @@
-# head — print the first lines of a file
-
-Output the first N lines (default: 10) of the given file.
+# head
 
 ## Usage
 
 ```
-head  [-h] [-n <N>] <file>
+
+Usage: head  [-h] [--help-json] [--json] [-n <N>] <file>
+
+Print the first N lines of a file (default: 10).
+Use -n <N> to specify a different line count.
+
 ```
 
 ## Options
 
-| Option | Description |
-|--------|-------------|
-| `-h, --help` | show this help and exit |
-| `-n, --lines=<N>` | number of lines to print (default: 10) |
-| `<file>` | input file |
+```
+Options:
+  -h, --help             show this help and exit
+  --help-json            print argument schema as JSON and exit
+  --json                 output lines as JSON
+  -n, --lines=<N>        number of lines to print (default: 10)
+  <file>                 input file
 
-## Examples
+Examples:
+  head file.txt
+  head -n 20 file.txt
 
-```sh
-head file.txt        # print first 10 lines
-head -n 5 file.txt   # print first 5 lines
+
 ```

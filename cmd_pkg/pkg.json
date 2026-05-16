@@ -1,0 +1,8 @@
+{
+  "name": "pkg",
+  "version": "1.0.0",
+  "description": "manage CoreShell packages",
+  "long_description": "Build, install, list, remove, compile, and upgrade packages for CoreShell.",
+  "files": ["bin/pkg"],
+  "docs": ["docs/pkg.md"]
+}

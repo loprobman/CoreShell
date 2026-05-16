@@ -33,7 +33,11 @@
 *.out
 *.app
 CoreShell
+coresh_llm
+pkg
 bin/
+node_modules/
+artifacts/*.tar.gz
 test_runner
 *.i*86
 *.x86_64

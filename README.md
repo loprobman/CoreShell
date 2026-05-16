@@ -5,7 +5,7 @@ A minimal, interactive Unix shell implemented in C (POSIX standard).
 ## Building
 
 ```bash
-make        # Compile the shell (CoreShell) and package manager (pkg/pkg)
+make        # Compile the shell (CoreShell), package manager (pkg/pkg), and LLM helper (coresh_llm)
 make debug  # Compile with debug symbols (-g -O0) for use with gdb
 make clean  # Remove all compiled objects, binaries, and test reports
 ```
@@ -14,6 +14,43 @@ make clean  # Remove all compiled objects, binaries, and test reports
 
 ```bash
 ./CoreShell
+```
+
+Once in the shell, you can use natural language commands with the `@` prefix to invoke the LLM helper:
+
+```bash
+user@CoreShell> @list all C files in this directory sorted by modification time
+Suggested command: ls -lt *.c
+Run this? (y/n) y
+```
+
+This feature requires the `coresh_llm` helper program to be available in your `$PATH`.
+
+## Node Registry Server
+
+CoreShell also includes a minimal Node.js + Express package registry server.
+
+### Install dependencies
+
+```bash
+npm install
+```
+
+### Start the registry server
+
+```bash
+npm start
+```
+
+The server listens on port `3000` and exposes:
+
+- `GET /packages`
+- `GET /packages/:name`
+
+### Run Node endpoint tests
+
+```bash
+npm test
 ```
 
 ## Testing
@@ -34,7 +71,7 @@ captures stdout/stderr via pipes.  On completion it produces:
 
 Both files are regenerated on every run and removed by `make clean`.
 
-### Test suites (132 test cases)
+### Test suites (136 test cases)
 
 | Suite | Cases | What is tested |
 |---|---|---|
@@ -54,19 +91,103 @@ Both files are regenerated on every run and removed by `make clean`.
 | `test_mkdir` | 3 | create, existing dir error, `--help` |
 | `test_rmdir` | 3 | remove empty, error, `--help` |
 | `test_touch` | 3 | create, update timestamp, `--help` |
-| `test_cmd_spec_metadata` | 16 | all 16 commands have name, summary, long_help, run, print_usage set |
-| `test_pkg_json` | 16 | all 16 `pkg.json` files contain all 6 required fields (incl. `files`) |
-| `test_docs_md` | 16 | all 16 `docs/<name>.md` files contain `## Usage` and `## Options` |
+| `test_cmd_spec_metadata` | 17 | all 17 commands have name, summary, long_help, run, print_usage set |
+| `test_pkg_json` | 17 | all 17 `pkg.json` files contain all 6 required fields (incl. `files`) |
+| `test_docs_md` | 17 | all 17 `docs/<name>.md` files contain `## Usage` and `## Options` |
 | `test_multicall_dispatch` | 6 | Mode 2 (argv[1]), unknown command error, Mode 1 (symlink) |
 | `test_pwd_help_format` | 2 | `--logical` and `--physical` appear in help (format bug regression) |
 | `test_json_flags` | 6 | `--help-json` emits schema with `name`/`options`; `--json` emits result key |
-| `test_pkg_binary` | 4 | `pkg --help`, `pkg list`, `pkg build` (missing args error), `pkg install` (bad archive) |
+| `test_pkg_binary` | 5 | `pkg --help`, `pkg list`, `pkg build` (missing args error), `pkg install` (bad archive), multicall dispatch |
 
 ## Debugging
 
 ```bash
 make debug
 gdb ./CoreShell
+```
+
+## Natural Language Commands with `@`
+
+CoreShell supports an optional **natural language mode** that bridges human language and shell commands via an external LLM helper.
+
+### How it works
+
+1. Type a command starting with `@` in the interactive shell:
+   ```bash
+   user@CoreShell> @find all PDF files larger than 5MB
+   ```
+
+2. CoreShell strips the `@` and sends your query to an external helper program `coresh_llm`.
+
+3. The helper returns a concrete shell command (e.g., `find . -name "*.pdf" -size +5M`).
+
+4. CoreShell displays the suggested command and asks for confirmation:
+   ```
+   Suggested command: find . -name "*.pdf" -size +5M
+   Run this? (y/n) 
+   ```
+
+5. If you confirm with `y`, the command executes immediately.
+
+### Architecture
+
+- **Shell side** (`main.c`):
+  - Detects `@` prefix in input lines.
+  - Calls `coresh_llm` via `fork()` + `execvp()`.
+  - Communicates via pipes: passes the query to the helper's stdin, reads the suggested command from its stdout.
+  - Asks user for confirmation before executing.
+
+- **Helper side** (`coresh_llm`):
+  - Receives the natural language query as a command-line argument.
+  - Implements LLM logic (e.g., OpenAI API, local model, rule-based mapping).
+  - Returns a single line: the suggested shell command.
+  - Should handle errors gracefully (empty output, network failures, etc.).
+
+### Requirements
+
+- `coresh_llm` must be available in your `$PATH`.
+- The helper program should accept the query as its first argument: `coresh_llm "your query here"`.
+- It should output exactly one line to stdout (the suggested command).
+
+### Extending the LLM Helper
+
+The included `coresh_llm.c` is a template with basic rule-based pattern matching. To extend it:
+
+1. **Mock/Rule-based approach** (current):
+   - edit `coresh_llm.c` and update the `mock_llm()` function with more patterns.
+   - Rebuild: `make coresh_llm` (or just `make`).
+
+2. **OpenAI API approach**:
+   - Replace `mock_llm()` with code that calls OpenAI's API (using `curl` or `libcurl`).
+   - Example prompt: `"Suggest the simplest shell command that achieves: <query>"`.
+   - Handle API key via environment variable: `OPENAI_API_KEY`.
+
+3. **Local LLM approach** (e.g., `ollama`, `llama.cpp`):
+   - Call the local model via HTTP or shell invocation.
+   - Ensure the helper runs within reasonable time (a few seconds max).
+
+### Example: Testing with the mock helper
+
+```bash
+# Build the helper (built by default with 'make')
+make
+
+# Run CoreShell
+./CoreShell
+
+# In the shell, try natural language queries:
+user@CoreShell> @list all C files
+Suggested command: ls -la *.c
+Run this? (y/n) y
+
+user@CoreShell> @find PDF files
+Suggested command: find . -type f
+Run this? (y/n) n
+Cancelled.
+
+user@CoreShell> @check disk usage
+Suggested command: df -h
+Run this? (y/n) y
 ```
 
 ---
@@ -366,6 +487,26 @@ touch file1.txt file2.txt
 
 ---
 
+### `pkg <subcommand> [args...]`
+
+Manage CoreShell packages.
+
+| Subcommand | Description |
+|---|---|
+| `build <src-dir> <output.tar.gz>` | package a module directory into a distributable archive |
+| `install <archive.tar.gz>` | install an archive into `~/.CoreShell` |
+| `list` | list installed packages from `~/.CoreShell/pkgdb.txt` |
+| `remove <name>` | uninstall a package |
+| `check-update <name>` | query registry and compare local vs latest version |
+| `upgrade <name>` | download and install latest version when available |
+| `compile [--dry-run] [dir]` | compile modules and refresh docs/metadata |
+
+- `pkg` is available both as:
+  - a built-in CoreShell command module (`./CoreShell pkg ...`), and
+  - a standalone binary (`./pkg/pkg ...`).
+
+---
+
 ## Help System
 
 Every built-in command accepts `-h` / `--help` to print its own usage summary.
@@ -411,7 +552,7 @@ rename/moves of the binary's parent directory is not an issue with hardlinks):
 ```bash
 BINARY="$(pwd)/CoreShell"
 BINDIR="$HOME/.local/bin"
-for cmd in help exit cd pwd echo ls stat cat head tail cp mv rm mkdir rmdir touch; do
+for cmd in help exit cd pwd echo ls stat cat head tail cp mv rm mkdir rmdir touch pkg; do
     ln "$BINARY" "$BINDIR/$cmd"
 done
 ```
@@ -419,7 +560,7 @@ done
 Alternatively, create symlinks (must be updated if the binary is moved):
 
 ```bash
-for cmd in help exit cd pwd echo ls stat cat head tail cp mv rm mkdir rmdir touch; do
+for cmd in help exit cd pwd echo ls stat cat head tail cp mv rm mkdir rmdir touch pkg; do
     ln -sf "$(pwd)/CoreShell" "$HOME/.local/bin/$cmd"
 done
 ```
@@ -446,7 +587,7 @@ main.c              # REPL loop, signal handling, registry dispatch, PATH setup
 Makefile            # Build configuration (all, debug, clean, test)
 README.md           # This file
 tests/
-  test_runner.c     # Automated C test runner (132 test cases)
+  test_runner.c     # Automated C test runner (136 test cases)
 test_report.md      # Generated test report (created by make test)
 argtable3/          # Vendored argument-parsing library
 cmd_spec/           # cmd_spec_t typedef (header only)
@@ -467,8 +608,10 @@ cmd_rm/             # rm built-in
 cmd_mkdir/          # mkdir built-in
 cmd_rmdir/          # rmdir built-in
 cmd_touch/          # touch built-in
-pkg/                # standalone package manager (separate binary)
-  pkg.c             # pkg build / install / list / remove
+cmd_pkg/            # pkg command module (built-in)
+pkg/                # pkg core + standalone wrapper binary
+  pkg.c             # shared pkg implementation + standalone main wrapper
+  pkg.h             # pkg_run / pkg_print_usage public interface
 ```
 
 Each `cmd_*/` directory contains:
@@ -530,6 +673,8 @@ that follow the `pkg.json` + `.tar.gz` format used by every built-in command mod
 | `pkg install <archive.tar.gz>` | Extract and install a package; symlink executables into `~/.CoreShell/bin/` |
 | `pkg list` | List all installed packages from `~/.CoreShell/pkgdb.txt` |
 | `pkg remove <name>` | Remove a package, its symlinks, and its install directory |
+| `pkg check-update <name>` | Query registry and compare installed vs latest version |
+| `pkg upgrade <name>` | Download and install latest version when available |
 | `pkg compile [--dry-run] [dir]` | Build modules in `dir` (default: `.`); produces `bin/<name>` + `build/lib<name>.a`; regenerates `docs/<name>.md` and refreshes `pkg.json` |
 
 ### Install layout

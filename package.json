@@ -1,0 +1,25 @@
+{
+  "name": "coreshell",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A minimal, interactive Unix shell implemented in C (POSIX standard).",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test tests/registry.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/loprobman/CoreShell.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/loprobman/CoreShell/issues"
+  },
+  "homepage": "https://github.com/loprobman/CoreShell#readme",
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}
