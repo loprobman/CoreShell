@@ -1,5 +1,5 @@
 CC     = gcc
-CFLAGS = -Wall -Wextra -g -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700
+CFLAGS = -Wall -Wextra -g -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -pthread
 
 INCLUDES = \
     -I. \
@@ -22,7 +22,9 @@ INCLUDES = \
     -Icmd_mkdir \
     -Icmd_rmdir \
     -Icmd_touch \
-    -Icmd_pkg
+    -Icmd_pkg \
+    -Icmd_jobs \
+    -Icmd_kill
 
 TARGET = CoreShell
 
@@ -46,6 +48,8 @@ SRC = main.c \
       cmd_rmdir/cmd_rmdir.c \
     cmd_touch/cmd_touch.c \
     cmd_pkg/cmd_pkg.c \
+    cmd_jobs/cmd_jobs.c \
+    cmd_kill/cmd_kill.c \
     pkg/pkg.c
 
 OBJ = $(SRC:.c=.o)

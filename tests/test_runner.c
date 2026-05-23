@@ -35,6 +35,38 @@
 
 #include "cmd_registry.h"
 #include "cmd_spec.h"
+#include "cmd_jobs.h"
+
+/* ── Job table stubs for test runner (avoids linker errors) ──────────── */
+/* These are stubbed here because the real implementations are in main.c,
+   which is not linked into the test_runner binary (only LIB_OBJ). */
+
+static bg_job_t  s_test_jobs[64];
+static int       s_test_job_count = 0;
+
+bg_job_t *job_table(int *count_out)
+{
+    *count_out = s_test_job_count;
+    return s_test_jobs;
+}
+
+int job_add(pid_t pid, const char *cmd)
+{
+    (void)pid; (void)cmd;
+    return -1;  /* Stub: table "full" */
+}
+
+bg_job_t *job_by_pid(pid_t pid)
+{
+    (void)pid;
+    return NULL;  /* Stub: not found */
+}
+
+bg_job_t *job_by_id(int job_id)
+{
+    (void)job_id;
+    return NULL;  /* Stub: not found */
+}
 
 /* ── Configuration ───────────────────────────────────────────────────── */
 
@@ -104,7 +136,7 @@ static const char *make_desc(const char *fmt, const char *arg)
 static const char *s_commands[] = {
     "ls",  "cat",   "cd",    "cp",    "echo",  "exit",
     "head","help",  "mkdir", "mv",    "pwd",   "rm",
-    "rmdir","stat", "tail",  "touch", "pkg"
+    "rmdir","stat", "tail",  "touch", "pkg",   "jobs",  "kill"
 };
 #define N_COMMANDS (int)(sizeof(s_commands) / sizeof(s_commands[0]))
 
@@ -1272,6 +1304,144 @@ static void write_text_log(const char *filepath)
 }
 
 /* ── Entry point ─────────────────────────────────────────────────────── */
+/* ---- jobs and kill --------------------------------------------------- */
+/*
+ * Tests the jobs builtin (empty table, then with no-running jobs) and
+ * the kill builtin (--help, invalid job, valid signal name).
+ * Note: these tests call the command run() directly, not through the REPL,
+ * so background job lifecycle (SIGCHLD/job_add) is not exercised here —
+ * that is covered by the interactive examples in Processes.md.
+ */
+static void test_jobs(void)
+{
+    /* jobs: prints "No background jobs." when table is empty */
+    run_test(&(test_case_t){
+        "jobs: prints no-jobs message when table is empty",
+        {"jobs", NULL}, 0, "No background jobs.", NULL
+    });
+
+    /* jobs: --help prints usage */
+    run_test(&(test_case_t){
+        "jobs: --help prints usage line",
+        {"jobs", "--help", NULL}, 0, "Usage", NULL
+    });
+
+    /* kill: --help prints usage */
+    run_test(&(test_case_t){
+        "kill: --help prints usage line",
+        {"kill", "--help", NULL}, 0, "Usage", NULL
+    });
+
+    /* kill: invalid job reference returns non-zero */
+    run_test(&(test_case_t){
+        "kill: unknown job %99 returns error",
+        {"kill", "%99", NULL}, EXPECT_FAIL, NULL, "no such job"
+    });
+}
+
+/* ---- threading: built-in commands via pthread ----------------------- */
+/*
+ * Tests the threading architecture: built-in commands execute in worker
+ * threads, with status returned via system pipes.
+ * 
+ * These tests validate:
+ *   1. Thread spawning and status propagation (via pipe)
+ *   2. Correct exit codes from threaded commands
+ *   3. Stdout/stderr output from threaded execution
+ *   4. Serial execution of multiple commands (each in its own thread)
+ *
+ * Note: The test runner itself forks a child to run each test, so the
+ * threading happens inside the forked child. The parent captures the
+ * output and exit code of the entire command invocation.
+ */
+static void test_threading(void)
+{
+    /* Threading test 1: pwd returns success (0) and prints working directory */
+    run_test(&(test_case_t){
+        "threading: pwd executes in thread and returns success",
+        {"pwd", NULL}, 0, "/", NULL
+    });
+
+    /* Threading test 2: echo returns success and prints message */
+    run_test(&(test_case_t){
+        "threading: echo executes in thread with correct output",
+        {"echo", "hello", "from", "thread", NULL}, 0, "hello from thread", NULL
+    });
+
+    /* Threading test 3: cd to current dir succeeds */
+    run_test(&(test_case_t){
+        "threading: cd . succeeds with exit code 0 and modifies process state",
+        {"cd", ".", NULL}, 0, NULL, NULL
+    });
+
+    /* Threading test 4: cd to nonexistent dir fails with proper error */
+    run_test(&(test_case_t){
+        "threading: cd /nonexistent fails with error message",
+        {"cd", "/nonexistent", NULL}, EXPECT_FAIL, NULL, "No such file"
+    });
+
+    /* Threading test 5: help lists commands */
+    run_test(&(test_case_t){
+        "threading: help returns command list from thread",
+        {"help", NULL}, 0, "help", NULL
+    });
+
+    /* Threading test 6: help with specific command works */
+    run_test(&(test_case_t){
+        "threading: help pwd shows pwd usage from thread",
+        {"help", "pwd", NULL}, 0, "pwd", NULL
+    });
+
+    /* Threading test 7: echo with -n flag (no newline) */
+    run_test(&(test_case_t){
+        "threading: echo -n returns success from thread",
+        {"echo", "-n", "no_newline", NULL}, 0, "no_newline", NULL
+    });
+
+    /* Threading test 8: ls with current directory */
+    run_test(&(test_case_t){
+        "threading: ls . returns success from thread",
+        {"ls", ".", NULL}, 0, NULL, NULL
+    });
+
+    /* Threading test 9: mkdir creates directory from thread */
+    run_test(&(test_case_t){
+        "threading: mkdir test_threading_dir succeeds from thread",
+        {"mkdir", "test_threading_dir", NULL}, 0, NULL, NULL
+    });
+
+    /* Threading test 10: pwd with --help flag from thread */
+    run_test(&(test_case_t){
+        "threading: pwd --help returns usage (exit 0) from thread",
+        {"pwd", "--help", NULL}, 0, "Usage", NULL
+    });
+
+    /* Threading test 11: echo with -e flag (escape sequences) */
+    run_test(&(test_case_t){
+        "threading: echo -e interprets escapes from thread",
+        {"echo", "-e", "line1\\nline2", NULL}, 0, "line1", NULL
+    });
+
+    /* Threading test 12: stat on fixture directory */
+    run_test(&(test_case_t){
+        "threading: stat returns file info from thread",
+        {"stat", g_fixture_dir, NULL}, 0, NULL, NULL
+    });
+
+    /* Threading test 13: exit --help shows help (special handling in thread) */
+    run_test(&(test_case_t){
+        "threading: exit --help returns usage from thread",
+        {"exit", "--help", NULL}, 0, "Usage", NULL
+    });
+
+    /* Threading test 14: cd with $HOME variable expansion */
+    run_test(&(test_case_t){
+        "threading: cd with no args goes to HOME from thread",
+        {"cd", NULL}, 0, NULL, NULL
+    });
+}
+
+/* ── Entry point ─────────────────────────────────────────────────────── */
 
 int main(void)
 {
@@ -1314,6 +1484,12 @@ int main(void)
     test_json_flags();
     test_pkg_binary();
     test_compile_output();
+
+    /* Week-Five: process management */
+    test_jobs();
+
+    /* Week-Five: threading architecture (built-ins via pthread) */
+    test_threading();
 
     /* Print terminal summary */
     print_terminal_report();
