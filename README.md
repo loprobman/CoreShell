@@ -107,6 +107,79 @@ make debug
 gdb ./CoreShell
 ```
 
+## Threading Architecture (Week Five)
+
+CoreShell uses **POSIX pthreads** for built-in command execution to satisfy embedded systems requirements:
+
+- **Built-in commands** execute in worker threads with status returned via system pipes.
+- **External commands** remain process-based (fork/exec).
+- **Shell pipelines** (`cmd1 | cmd2`) continue to use process-based execution with Unix pipes.
+
+### How It Works
+
+Each built-in command (e.g., `pwd`, `echo`, `ls`) runs in its own worker thread:
+
+1. Main REPL thread parses the command.
+2. Creates a status pipe: `pipe(status_fd)`.
+3. Spawns a worker thread with the command context.
+4. Worker thread executes the command and writes its exit code to the pipe.
+5. Main thread reads the status, waits for thread completion, and returns to the prompt.
+
+This achieves:
+- ✓ Concurrency model for internal command execution (pthread).
+- ✓ Inter-thread communication via system pipes.
+- ✓ External commands via separate processes (fork/exec).
+- ✓ Shell pipelines remain process-safe and Unix-compatible.
+
+### Example: Single Built-in
+
+```bash
+$ ./CoreShell pwd
+/home/user/CoreShell
+
+$ ./CoreShell echo hello
+hello
+```
+
+Both commands execute in worker threads and return their status through pipes.
+
+### Example: External Command (No Threading)
+
+```bash
+$ ./CoreShell /bin/ls -la
+```
+
+External commands are detected at runtime (not in registry) and executed via fork/exec—no threading.
+
+### Example: Pipeline (Process-Based, Not Threaded)
+
+```bash
+$ ./CoreShell
+...
+user@CoreShell> echo hello | cat
+hello
+```
+
+Even though `echo` and `cat` are built-ins, they execute in **separate forked processes** when in a pipeline. This preserves Unix pipe semantics and shell correctness.
+
+### Implementation Details
+
+- **Compiler flag**: `-pthread` added to `CFLAGS` in the Makefile.
+- **Main code**: `dispatch_builtin()` in `main.c` handles thread spawning and pipe I/O.
+- **Documentation**: See [tests/Threads.md](tests/Threads.md) for detailed design, architecture diagrams, and step-by-step exercises.
+
+### Testing Threads
+
+```bash
+$ make test
+Running CoreShell test suite...
+...
+```
+
+The test runner internally uses the same threading mechanism. Each test case triggers the threaded dispatch, validates output, and confirms the exit status was correctly propagated through the pipe.
+
+---
+
 ## Natural Language Commands with `@`
 
 CoreShell supports an optional **natural language mode** that bridges human language and shell commands via an external LLM helper.

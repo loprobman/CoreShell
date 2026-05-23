@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <ctype.h>
 #include <libgen.h>
+#include <pthread.h>
 #include "cmd_registry.h"
 #include "cmd_jobs.h"
 
@@ -213,6 +214,23 @@ static char *read_input(void)
 
 /* ── command dispatch ──────────────────────────────────────────────────── */
 
+typedef struct
+{
+    const cmd_spec_t *spec;
+    int argc;
+    char **argv;
+    int status_fd;
+} builtin_thread_ctx_t;
+
+static void *builtin_thread_main(void *arg)
+{
+    builtin_thread_ctx_t *ctx = (builtin_thread_ctx_t *)arg;
+    int status = ctx->spec->run(ctx->argc, ctx->argv);
+    (void)write(ctx->status_fd, &status, sizeof(status));
+    close(ctx->status_fd);
+    return NULL;
+}
+
 /* Dispatch a built-in command by name.  Returns the command's exit code,
    or 1 if the command is not found. */
 static int dispatch_builtin(int argc, char *argv[])
@@ -222,7 +240,51 @@ static int dispatch_builtin(int argc, char *argv[])
 
     const cmd_spec_t *spec = find_command(argv[0]);
     if (spec != NULL)
-        return spec->run(argc, argv);
+    {
+        /* Assignment mode: internal commands run in a pthread and return
+           status through a system pipe. */
+        int status_pipe[2];
+        if (pipe(status_pipe) < 0)
+        {
+            perror("pipe");
+            return 1;
+        }
+
+        builtin_thread_ctx_t ctx;
+        ctx.spec = spec;
+        ctx.argc = argc;
+        ctx.argv = argv;
+        ctx.status_fd = status_pipe[1];
+
+        pthread_t tid;
+        int prc = pthread_create(&tid, NULL, builtin_thread_main, &ctx);
+        if (prc != 0)
+        {
+            fprintf(stderr, "pthread_create: %s\n", strerror(prc));
+            close(status_pipe[0]);
+            close(status_pipe[1]);
+            return 1;
+        }
+
+        int status = 1;
+        ssize_t n = read(status_pipe[0], &status, sizeof(status));
+        close(status_pipe[0]);
+
+        prc = pthread_join(tid, NULL);
+        if (prc != 0)
+        {
+            fprintf(stderr, "pthread_join: %s\n", strerror(prc));
+            close(status_pipe[1]);
+            return 1;
+        }
+
+        close(status_pipe[1]);
+
+        if (n == (ssize_t)sizeof(status))
+            return status;
+
+        return 1;
+    }
 
     fprintf(stderr, "CoreShell: '%s': command not found\n", argv[0]);
     return 1;
@@ -1226,7 +1288,7 @@ int main(int argc, char *argv[])
         const cmd_spec_t *spec = find_command(self);
         if (!spec)
             return unknown_command(self);
-        return spec->run(argc, argv); /* Run Command */
+        return dispatch_builtin(argc, argv); /* Run internal command via thread */
     }
 
     /* Mode 2: ./CoreShell <cmd> [args...] */
