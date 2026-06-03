@@ -1,0 +1,8 @@
+{
+  "name": "kill",
+  "version": "1.0.0",
+  "description": "send a signal to process or job",
+  "long_description": "Send a signal to a process by PID or a background job by %job id. Defaults to SIGTERM and supports -s SIGNAL.",
+  "files": ["bin/kill"],
+  "docs": ["docs/kill.md"]
+}

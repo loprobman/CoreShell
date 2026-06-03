@@ -108,8 +108,10 @@ typedef struct {
     char        stderr_buf[MAX_OUTPUT];
     const char *stdout_contains;
     const char *stderr_contains;
+    const char *stderr_not_contains;
     int         stdout_match;   /* 1 if check passed or no check          */
     int         stderr_match;
+    int         stderr_not_match;
     int         passed;
 } test_result_t;
 
@@ -205,8 +207,10 @@ static void run_test(const test_case_t *tc)
     r->stderr_buf[0]    = '\0';
     r->stdout_contains  = tc->stdout_contains;
     r->stderr_contains  = tc->stderr_contains;
+    r->stderr_not_contains = NULL;
     r->stdout_match     = 1;
     r->stderr_match     = 1;
+    r->stderr_not_match = 1;
     r->passed           = 0;
 
     int out_pipe[2], err_pipe[2];
@@ -318,8 +322,10 @@ static void run_shell_test(const test_case_t *tc)
     r->stderr_buf[0]    = '\0';
     r->stdout_contains  = tc->stdout_contains;
     r->stderr_contains  = tc->stderr_contains;
+    r->stderr_not_contains = NULL;
     r->stdout_match     = 1;
     r->stderr_match     = 1;
+    r->stderr_not_match = 1;
     r->passed           = 0;
 
     int out_pipe[2], err_pipe[2];
@@ -387,6 +393,131 @@ static void run_shell_test(const test_case_t *tc)
     }
 }
 
+/* ── Interactive shell script test (feeds stdin into ./CoreShell) ───── */
+static void run_shell_script_test(const char *description,
+                                  const char *script,
+                                  const char *working_dir,
+                                  int expected_exit,
+                                  const char *stdout_contains,
+                                  const char *stderr_contains,
+                                  const char *stderr_not_contains)
+{
+    if (g_count >= MAX_TESTS) {
+        fprintf(stderr, "error: MAX_TESTS (%d) exceeded\n", MAX_TESTS);
+        return;
+    }
+
+    test_result_t *r = &g_results[g_count++];
+    r->description     = description;
+    r->expected_exit   = expected_exit;
+    r->actual_exit     = -1;
+    r->stdout_buf[0]   = '\0';
+    r->stderr_buf[0]   = '\0';
+    r->stdout_contains = stdout_contains;
+    r->stderr_contains = stderr_contains;
+    r->stderr_not_contains = stderr_not_contains;
+    r->stdout_match    = 1;
+    r->stderr_match    = 1;
+    r->stderr_not_match = 1;
+    r->passed          = 0;
+
+    int out_pipe[2], err_pipe[2], in_pipe[2];
+    if (pipe(out_pipe) < 0 || pipe(err_pipe) < 0 || pipe(in_pipe) < 0) {
+        perror("pipe");
+        return;
+    }
+
+    char shell_path[1024];
+    if (realpath("./CoreShell", shell_path) == NULL) {
+        perror("realpath");
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) { perror("fork"); return; }
+
+    if (pid == 0) {
+        close(out_pipe[0]);
+        close(err_pipe[0]);
+        close(in_pipe[1]);
+
+        if (working_dir != NULL && chdir(working_dir) != 0) {
+            perror(working_dir);
+            _exit(127);
+        }
+
+        if (dup2(in_pipe[0], STDIN_FILENO) < 0) _exit(126);
+        if (dup2(out_pipe[1], STDOUT_FILENO) < 0) _exit(126);
+        if (dup2(err_pipe[1], STDERR_FILENO) < 0) _exit(126);
+
+        close(in_pipe[0]);
+        close(out_pipe[1]);
+        close(err_pipe[1]);
+
+        char *args[] = { "./CoreShell", NULL };
+        execv(shell_path, args);
+        perror(args[0]);
+        _exit(127);
+    }
+
+    close(out_pipe[1]);
+    close(err_pipe[1]);
+    close(in_pipe[0]);
+
+    if (script != NULL && *script != '\0') {
+        size_t len = strlen(script);
+        size_t written_total = 0;
+        while (written_total < len) {
+            ssize_t written = write(in_pipe[1], script + written_total,
+                                    len - written_total);
+            if (written < 0) {
+                if (errno == EINTR) continue;
+                break;
+            }
+            written_total += (size_t)written;
+        }
+    }
+    close(in_pipe[1]);
+
+    { ssize_t n, total = 0;
+      while (total < MAX_OUTPUT - 1 &&
+             (n = read(out_pipe[0], r->stdout_buf + total,
+                       (size_t)(MAX_OUTPUT - 1 - total))) > 0)
+          total += n;
+      r->stdout_buf[total] = '\0'; }
+    close(out_pipe[0]);
+
+    { ssize_t n, total = 0;
+      while (total < MAX_OUTPUT - 1 &&
+             (n = read(err_pipe[0], r->stderr_buf + total,
+                       (size_t)(MAX_OUTPUT - 1 - total))) > 0)
+          total += n;
+      r->stderr_buf[total] = '\0'; }
+    close(err_pipe[0]);
+
+    int status;
+    waitpid(pid, &status, 0);
+    r->actual_exit = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+
+    if (expected_exit == EXPECT_FAIL)
+        r->passed = (r->actual_exit != 0);
+    else
+        r->passed = (r->actual_exit == expected_exit);
+
+    if (stdout_contains) {
+        r->stdout_match = strstr(r->stdout_buf, stdout_contains) != NULL;
+        if (!r->stdout_match) r->passed = 0;
+    }
+    if (stderr_contains) {
+        r->stderr_match = strstr(r->stderr_buf, stderr_contains) != NULL;
+        if (!r->stderr_match) r->passed = 0;
+    }
+    if (stderr_not_contains) {
+        r->stderr_not_match = strstr(r->stderr_buf, stderr_not_contains) == NULL;
+        if (!r->stderr_not_match) r->passed = 0;
+    }
+}
+
 /* ── File-content test (no fork; opens file and checks substrings) ────── */
 /*
  * Opens filepath, reads its entire content, then verifies each string
@@ -411,8 +542,10 @@ static void check_file_test(const char  *description,
     r->stderr_buf[0]   = '\0';
     r->stdout_contains = NULL;
     r->stderr_contains = NULL;
+    r->stderr_not_contains = NULL;
     r->stdout_match    = 1;
     r->stderr_match    = 1;
+    r->stderr_not_match = 1;
     r->passed          = 1;
 
     FILE *f = fopen(filepath, "r");
@@ -822,8 +955,10 @@ static void test_cmd_spec_metadata(void)
         r->stderr_buf[0]   = '\0';
         r->stdout_contains = NULL;
         r->stderr_contains = NULL;
+        r->stderr_not_contains = NULL;
         r->stdout_match    = 1;
         r->stderr_match    = 1;
+        r->stderr_not_match = 1;
 
         if (!spec) {
             r->actual_exit = 1;
@@ -1126,6 +1261,8 @@ static void print_terminal_report(void)
                 printf("  stdout missing: \"%s\"", r->stdout_contains);
             if (!r->stderr_match)
                 printf("  stderr missing: \"%s\"", r->stderr_contains);
+            if (!r->stderr_not_match)
+                printf("  stderr contains forbidden: \"%s\"", r->stderr_not_contains);
         } else {
             CPRINT(COL_DIM, "  exit=%d", r->actual_exit);
         }
@@ -1232,6 +1369,10 @@ static void write_markdown_report(const char *filepath)
                 fprintf(f,
                     "- **stderr**: expected to contain `\"%s\"`\n",
                     r->stderr_contains);
+            if (!r->stderr_not_match)
+                fprintf(f,
+                    "- **stderr**: expected to NOT contain `\"%s\"`\n",
+                    r->stderr_not_contains);
 
             if (r->stdout_buf[0])
                 fprintf(f, "- **captured stdout**:\n```\n%s\n```\n",
@@ -1356,6 +1497,8 @@ static void test_jobs(void)
  */
 static void test_threading(void)
 {
+    (void)system("rm -rf -- test_threading_dir");
+
     /* Threading test 1: pwd returns success (0) and prints working directory */
     run_test(&(test_case_t){
         "threading: pwd executes in thread and returns success",
@@ -1441,6 +1584,55 @@ static void test_threading(void)
     });
 }
 
+/* ---- repl / parser integration --------------------------------------- */
+static void test_repl_parser(void)
+{
+    char script[1024];
+    const char *abs_path = "/tmp/coreshell_abs_path_test.txt";
+
+    run_shell_script_test(
+        "repl: echo command is parsed and executed",
+        "echo hello from repl\n",
+        NULL,
+        0, "hello from repl", NULL, NULL);
+
+    run_shell_script_test(
+        "repl: option token in pipeline is parsed",
+        "echo hello from repl | wc -c\n",
+        NULL,
+        0, NULL, NULL, NULL);
+
+    run_shell_script_test(
+        "repl: foreground pipeline does not emit waitpid ECHILD warning",
+        "pwd | pwd\n",
+        NULL,
+        0, NULL, NULL, "waitpid: No child processes");
+
+    snprintf(script, sizeof(script),
+             "echo redirected > repl_output.txt\n");
+    run_shell_script_test(
+        "repl: redirection writes a file through the shell parser",
+        script,
+        NULL,
+        0, NULL, NULL, NULL);
+
+    run_shell_script_test(
+        "repl: builtin cat reads stdin via input redirection",
+        "cat < repl_output.txt\n",
+        NULL,
+        0, "redirected", NULL, NULL);
+    unlink("repl_output.txt");
+
+    snprintf(script, sizeof(script),
+             "echo absredir > %s\n", abs_path);
+    run_shell_script_test(
+        "repl: absolute-path redirection is parsed",
+        script,
+        NULL,
+        0, NULL, NULL, NULL);
+    unlink(abs_path);
+}
+
 /* ── Entry point ─────────────────────────────────────────────────────── */
 
 int main(void)
@@ -1490,6 +1682,9 @@ int main(void)
 
     /* Week-Five: threading architecture (built-ins via pthread) */
     test_threading();
+
+    /* Interactive shell parser path (BNFC front end + legacy fallback) */
+    test_repl_parser();
 
     /* Print terminal summary */
     print_terminal_report();

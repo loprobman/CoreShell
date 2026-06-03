@@ -1,8 +1,21 @@
 CC     = gcc
-CFLAGS = -Wall -Wextra -g -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -pthread
+CFLAGS = -Wall -Wextra -g -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -pthread -Dyylex=grammar_lex -Dyy_scan_string=grammar__scan_string -Dyy_delete_buffer=grammar__delete_buffer -Dyylex_destroy=grammar_lex_destroy -Dyyget_text=grammar_get_text
+
+BNFC = bnfc
+BNFC_GRAMMAR = Grammar/Grammar.cf
+BNFC_STAMP = .bnfc.stamp
+.RECIPEPREFIX = >
 
 INCLUDES = \
     -I. \
+  -IAbsyn \
+  -IBison \
+  -IBuffer \
+  -IGrammar \
+  -ILexer \
+  -IParser \
+  -IPrinter \
+  -ISkeleton \
     -Iargtable3 \
     -Icmd_spec \
     -Icmd_registry \
@@ -29,6 +42,12 @@ INCLUDES = \
 TARGET = CoreShell
 
 SRC = main.c \
+  Absyn/Absyn.c \
+  Buffer/Buffer.c \
+  Lexer/Lexer.c \
+  Parser/Parser.c \
+  Printer/Printer.c \
+  Skeleton/Skeleton.c \
       argtable3/argtable3.c \
       cmd_registry/cmd_registry.c \
       cmd_help/cmd_help.c \
@@ -60,28 +79,55 @@ PKG_SRC    = pkg/pkg.c
 LLM_TARGET = coresh_llm
 LLM_SRC    = coresh_llm.c
 
-all: $(TARGET) $(PKG_TARGET) $(LLM_TARGET)
+all: $(BNFC_STAMP) $(TARGET) $(PKG_TARGET) $(LLM_TARGET)
+
+$(BNFC_STAMP): $(BNFC_GRAMMAR)
+>$(BNFC) --c $(BNFC_GRAMMAR)
+>mkdir -p Absyn Buffer Bison Grammar Lexer Parser Printer Skeleton Test
+>test -f Absyn.c && mv -f Absyn.c Absyn/Absyn.c || true
+>test -f Absyn.h && mv -f Absyn.h Absyn/Absyn.h || true
+>test -f Buffer.c && mv -f Buffer.c Buffer/Buffer.c || true
+>test -f Buffer.h && mv -f Buffer.h Buffer/Buffer.h || true
+>test -f Grammar.l && mv -f Grammar.l Grammar/Grammar.l || true
+>test -f Grammar.y && mv -f Grammar.y Grammar/Grammar.y || true
+>test -f Bison.h && mv -f Bison.h Bison/Bison.h || true
+>test -f Lexer.c && mv -f Lexer.c Lexer/Lexer.c || true
+>test -f Parser.c && mv -f Parser.c Parser/Parser.c || true
+>test -f Parser.h && mv -f Parser.h Parser/Parser.h || true
+>test -f Printer.c && mv -f Printer.c Printer/Printer.c || true
+>test -f Printer.h && mv -f Printer.h Printer/Printer.h || true
+>test -f Skeleton.c && mv -f Skeleton.c Skeleton/Skeleton.c || true
+>test -f Skeleton.h && mv -f Skeleton.h Skeleton/Skeleton.h || true
+>test -f Test.c && mv -f Test.c Test/Test.c || true
+>touch $(BNFC_STAMP)
+
+Parser/Parser.c Bison/Bison.h: Grammar/Grammar.y
+>bison -d -o Parser/Parser.c Grammar/Grammar.y
+>test -f Bison.h && mv -f Bison.h Bison/Bison.h || true
+
+Lexer/Lexer.c: Grammar/Grammar.l Bison/Bison.h
+>flex -o Lexer/Lexer.c Grammar/Grammar.l
 
 $(PKG_TARGET): $(PKG_SRC)
-	$(CC) $(CFLAGS) -o $(PKG_TARGET) $(PKG_SRC)
+>$(CC) $(CFLAGS) -o $(PKG_TARGET) $(PKG_SRC)
 
 $(LLM_TARGET): $(LLM_SRC)
-	$(CC) $(CFLAGS) -o $(LLM_TARGET) $(LLM_SRC)
+>$(CC) $(CFLAGS) -o $(LLM_TARGET) $(LLM_SRC)
 
 pkg/pkg.o: CFLAGS += -DPKG_NO_MAIN
 
-$(TARGET): $(OBJ)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $(TARGET) $(OBJ) -lm
+$(TARGET): $(BNFC_STAMP) $(OBJ)
+>$(CC) $(CFLAGS) $(INCLUDES) -o $(TARGET) $(OBJ) -lm
 
 %.o: %.c
-	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+>$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
 debug: CFLAGS += -g -O0
 debug: clean $(TARGET)
 
 clean:
-	rm -f $(OBJ) $(TARGET) $(PKG_TARGET) $(LLM_TARGET) $(TEST_OBJ) $(TEST_BIN) test_report.md test_output.log
-	rm -rf bin/ build/
+>rm -f $(OBJ) $(TARGET) $(PKG_TARGET) $(LLM_TARGET) $(TEST_OBJ) $(TEST_BIN) test_report.md test_output.log $(BNFC_STAMP)
+>rm -rf bin/ build/
 
 # ── Test runner ──────────────────────────────────────────────────────── #
 LIB_OBJ  = $(filter-out main.o, $(OBJ))
@@ -90,10 +136,10 @@ TEST_OBJ = tests/test_runner.o
 TEST_BIN = test_runner
 
 test: $(TARGET) $(TEST_BIN)
-	@printf "Running CoreShell test suite...\n"
-	./$(TEST_BIN)
+>@printf "Running CoreShell test suite...\n"
+>./$(TEST_BIN)
 
-$(TEST_BIN): $(LIB_OBJ) $(TEST_OBJ)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $(TEST_BIN) $(LIB_OBJ) $(TEST_OBJ) -lm
+$(TEST_BIN): $(BNFC_STAMP) $(LIB_OBJ) $(TEST_OBJ)
+>$(CC) $(CFLAGS) $(INCLUDES) -o $(TEST_BIN) $(LIB_OBJ) $(TEST_OBJ) -lm
 
 .PHONY: all clean debug test pkg

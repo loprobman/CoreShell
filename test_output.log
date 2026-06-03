@@ -1,6 +1,6 @@
 CoreShell Test Log
-Generated : 2026-05-16 17:48:03
-Fixture   : /tmp/coreshell_test_usQlbD
+Generated : 2026-05-26 21:28:26
+Fixture   : /tmp/coreshell_test_bFQjvg
 ========================================
 
 [PASS] help: no args lists all commands
@@ -96,12 +96,8 @@ Fixture   : /tmp/coreshell_test_usQlbD
 [PASS] pkg.json: tail has all required fields
 [PASS] pkg.json: touch has all required fields
 [PASS] pkg.json: pkg has all required fields
-[FAIL] pkg.json: jobs has all required fields
-       exit=1 (expected 0)
-       stderr: cannot open: cmd_jobs/pkg.json
-[FAIL] pkg.json: kill has all required fields
-       exit=1 (expected 0)
-       stderr: cannot open: cmd_kill/pkg.json
+[PASS] pkg.json: jobs has all required fields
+[PASS] pkg.json: kill has all required fields
 [PASS] docs: ls.md has Usage and Options sections
 [PASS] docs: cat.md has Usage and Options sections
 [PASS] docs: cd.md has Usage and Options sections
@@ -119,26 +115,14 @@ Fixture   : /tmp/coreshell_test_usQlbD
 [PASS] docs: tail.md has Usage and Options sections
 [PASS] docs: touch.md has Usage and Options sections
 [PASS] docs: pkg.md has Usage and Options sections
-[FAIL] docs: jobs.md has Usage and Options sections
-       exit=1 (expected 0)
-       stderr: cannot open: cmd_jobs/docs/jobs.md
-[FAIL] docs: kill.md has Usage and Options sections
-       exit=1 (expected 0)
-       stderr: cannot open: cmd_kill/docs/kill.md
+[PASS] docs: jobs.md has Usage and Options sections
+[PASS] docs: kill.md has Usage and Options sections
 [PASS] multicall mode2: echo prints argument
 [PASS] multicall mode2: pwd returns an absolute path
 [PASS] multicall mode2: ls --help shows Usage
 [PASS] multicall mode2: help lists built-in commands
-[FAIL] multicall mode2: unknown command returns non-zero
-       exit=127 (expected non-zero)
-       stderr missing: "unknown command"
-       stderr: xyznosuchcmd99: No such file or directory
-
-[FAIL] multicall mode1: symlink 'echo' dispatches correctly
-       exit=1 (expected 0)
-       stdout missing: "mode1_ok"
-       stderr: CoreShell: './echo': command not found
-
+[PASS] multicall mode2: unknown command returns non-zero
+[PASS] multicall mode1: symlink 'echo' dispatches correctly
 [PASS] pwd: --help lists --logical long option (format bug regression)
 [PASS] pwd: --help lists --physical long option (format bug regression)
 [PASS] json: echo --help-json emits JSON schema with "name" key
@@ -147,34 +131,14 @@ Fixture   : /tmp/coreshell_test_usQlbD
 [PASS] json: echo --json returns {"output": ...}
 [PASS] json: pwd --json returns {"path": ...}
 [PASS] json: ls --json returns {"entries": ...}
-[FAIL] pkg: --help lists build subcommand
-       exit=127 (expected 0)
-       stdout missing: "build"
-       stderr: ./pkg/pkg: No such file or directory
-
-[FAIL] pkg: list reports installed packages
-       exit=127 (expected 0)
-       stdout missing: "packages"
-       stderr: ./pkg/pkg: No such file or directory
-
+[PASS] pkg: --help lists build subcommand
+[PASS] pkg: list reports installed packages
 [PASS] pkg: build with missing args returns error
 [PASS] pkg: install of nonexistent archive returns error
 [PASS] pkg: CoreShell multicall dispatch supports pkg --help
-[FAIL] pkg compile --dry-run: mentions docs
-       exit=127 (expected 0)
-       stdout missing: "docs"
-       stderr: ./pkg/pkg: No such file or directory
-
-[FAIL] pkg compile --dry-run: mentions pkg.json
-       exit=127 (expected 0)
-       stdout missing: "pkg.json"
-       stderr: ./pkg/pkg: No such file or directory
-
-[FAIL] pkg compile cmd_echo: succeeds and prints [OK]
-       exit=127 (expected 0)
-       stdout missing: "[OK]"
-       stderr: ./pkg/pkg: No such file or directory
-
+[PASS] pkg compile --dry-run: mentions docs
+[PASS] pkg compile --dry-run: mentions pkg.json
+[PASS] pkg compile cmd_echo: succeeds and prints [OK]
 [PASS] compile output: echo.md has Usage and Options
 [PASS] compile output: pwd.md has Usage and Options
 [PASS] compile output: ls.md has Usage and Options
@@ -199,6 +163,12 @@ Fixture   : /tmp/coreshell_test_usQlbD
 [PASS] threading: stat returns file info from thread
 [PASS] threading: exit --help returns usage from thread
 [PASS] threading: cd with no args goes to HOME from thread
+[PASS] repl: echo command is parsed and executed
+[PASS] repl: option token in pipeline is parsed
+[PASS] repl: foreground pipeline does not emit waitpid ECHILD warning
+[PASS] repl: redirection writes a file through the shell parser
+[PASS] repl: builtin cat reads stdin via input redirection
+[PASS] repl: absolute-path redirection is parsed
 
 ========================================
-Results: 149 passed / 11 failed / 160 total (93%)
+Results: 166 passed / 0 failed / 166 total (100%)

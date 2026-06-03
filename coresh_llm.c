@@ -54,7 +54,7 @@ static void mock_llm(const char *query, char *out, size_t outsz)
     if (strstr(normalized, "list") || strstr(normalized, "show"))
     {
         if (strstr(normalized, "c file"))
-            snprintf(out, outsz, "/bin/ls -la *.c");
+            snprintf(out, outsz, "find . -type f -name '*.c'");
         else if (strstr(normalized, "directory") || strstr(normalized, "dir"))
             snprintf(out, outsz, "/bin/ls -la");
         else
