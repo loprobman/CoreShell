@@ -1,0 +1,8 @@
+{
+  "name": "jobs",
+  "version": "1.0.0",
+  "description": "list active background jobs",
+  "long_description": "Display all active background jobs in the current shell session, including job id, state, pid, and command.",
+  "files": ["bin/jobs"],
+  "docs": ["docs/jobs.md"]
+}

@@ -20,7 +20,7 @@ Once in the shell, you can use natural language commands with the `@` prefix to 
 
 ```bash
 user@CoreShell> @list all C files in this directory sorted by modification time
-Suggested command: ls -lt *.c
+Suggested command: find . -type f -name '*.c'
 Run this? (y/n) y
 ```
 
@@ -71,7 +71,7 @@ captures stdout/stderr via pipes.  On completion it produces:
 
 Both files are regenerated on every run and removed by `make clean`.
 
-### Test suites (136 test cases)
+### Test suites (164 test cases)
 
 | Suite | Cases | What is tested |
 |---|---|---|
@@ -99,6 +99,7 @@ Both files are regenerated on every run and removed by `make clean`.
 | `test_json_flags` | 6 | `--help-json` emits schema with `name`/`options`; `--json` emits result key |
 | `test_pkg_binary` | 5 | `pkg --help`, `pkg list`, `pkg build` (missing args error), `pkg install` (bad archive), multicall dispatch |
 | `test_jobs` | 4 | `jobs` with no jobs, `jobs` after background launch, `kill %N` terminates job, `kill --help` |
+| `test_repl_parser` | 4 | interactive `./CoreShell` input, option tokens in pipelines, redirected file output, absolute-path redirection |
 
 ## Debugging
 
@@ -189,6 +190,54 @@ CoreShell supports an optional **natural language mode** that bridges human lang
 1. Type a command starting with `@` in the interactive shell:
    ```bash
    user@CoreShell> @find all PDF files larger than 5MB
+
+CoreShell now tries a BNFC-generated parser first for ordinary shell lines, then
+falls back to the legacy tokenizer for quote-heavy or out-of-grammar input.
+That keeps the interactive shell usable while the parser front end handles the
+common command forms.
+
+## Using the Shell
+
+1. Start with a simple command.
+
+  ```bash
+  user@CoreShell> pwd
+  user@CoreShell> echo hello world
+  ```
+
+2. Run commands through a pipeline.
+
+  ```bash
+  user@CoreShell> echo hello from coreshell | tr a-z A-Z
+  ```
+
+3. Redirect output to a file and read it back.
+
+  ```bash
+  user@CoreShell> echo sample > out.txt
+  user@CoreShell> cat < out.txt
+  ```
+
+4. Run a job in the background.
+
+  ```bash
+  user@CoreShell> sleep 5 &
+  ```
+
+5. Use built-in commands directly.
+
+  ```bash
+  user@CoreShell> help
+  user@CoreShell> cd /tmp
+  ```
+
+6. Try the optional natural-language helper.
+
+  ```bash
+  user@CoreShell> @list all C files here
+  ```
+
+Press `Ctrl+D` to exit the shell.
    ```
 
 2. CoreShell strips the `@` and sends your query to an external helper program `coresh_llm`.
@@ -221,6 +270,11 @@ CoreShell supports an optional **natural language mode** that bridges human lang
 
 - `coresh_llm` must be available in your `$PATH`.
 - The helper program should accept the query as its first argument: `coresh_llm "your query here"`.
+
+The test runner also drives a few end-to-end REPL cases through the real
+`./CoreShell` binary. Those cases verify that the BNFC front end accepts the
+common shell syntax before the legacy tokenizer handles anything outside that
+subset.
 - It should output exactly one line to stdout (the suggested command).
 
 ### Extending the LLM Helper
@@ -251,7 +305,7 @@ make
 
 # In the shell, try natural language queries:
 user@CoreShell> @list all C files
-Suggested command: ls -la *.c
+Suggested command: find . -type f -name '*.c'
 Run this? (y/n) y
 
 user@CoreShell> @find PDF files

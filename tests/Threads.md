@@ -200,6 +200,7 @@ Pipeline stages are not threaded. `pwd | grep usr` still uses `fork()` and proce
 ```bash
 $ ./CoreShell pwd
 /home/rmlr/Development/CoreShell/CoreShell
+# Print status of last command
 $ echo $?
 0
 ```

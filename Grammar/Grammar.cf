@@ -1,0 +1,31 @@
+comment "/*" "*/" ;
+comment "//" ;
+
+token Word ((letter | digit | '_' | '.' | '/' | '-' | '%' | ':' | '+' | '=' | '~' | '*' | '?' | '@')
+			(letter | digit | '_' | '.' | '/' | '-' | '%' | ':' | '+' | '=' | '~' | '*' | '?' | '@')*) ;
+
+entrypoints Input ;
+
+StartInput. Input ::= Job ;
+
+Foreground. Job ::= CommandLine ;
+Background. Job ::= CommandLine "&" ;
+
+MkCmdLine. CommandLine ::= Pipeline OptRedir ;
+
+NoRedir. OptRedir ::= ;
+InOutRedir. OptRedir ::= "<" Word ">" Word ;
+OutInRedir. OptRedir ::= ">" Word "<" Word ;
+OutAppendRedir. OptRedir ::= ">>" Word ;
+ErrOutRedir. OptRedir ::= "2>" Word ;
+ErrAppendRedir. OptRedir ::= "2>>" Word ;
+OutRedir. OptRedir ::= ">" Word ;
+InRedir. OptRedir ::= "<" Word ;
+
+Single. Pipeline ::= SimpleCommand ;
+Pipe. Pipeline ::= SimpleCommand "|" Pipeline ;
+
+MkSimpleCommand. SimpleCommand ::= Word ListWord ;
+
+NoMoreWord. ListWord ::= ;
+MoreWord. ListWord ::= Word ListWord ;

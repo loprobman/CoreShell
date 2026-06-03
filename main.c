@@ -9,6 +9,9 @@
 #include <ctype.h>
 #include <libgen.h>
 #include <pthread.h>
+#include "Absyn.h"
+#include "Parser.h"
+#include "Printer.h"
 #include "cmd_registry.h"
 #include "cmd_jobs.h"
 
@@ -37,6 +40,24 @@ static int unknown_command(const char *cmd)
     fprintf(stderr, "CoreShell: unknown command '%s'\n", cmd);
     fprintf(stderr, "Run 'CoreShell' with no arguments to enter the interactive shell.\n");
     return EXIT_FAILURE;
+}
+
+/* Parse common shell syntax through BNFC first, then render it back into a
+   normalized string. The legacy tokenizer still handles quote-heavy lines
+   and any syntax that falls outside the BNFC grammar. */
+static const char *normalize_line_with_bnfc(const char *line)
+{
+    Input ast = psInput(line);
+    const char *rendered;
+
+    if (ast == NULL)
+        return NULL;
+
+    /* printInput returns Printer.c's internal reusable buffer;
+       caller must NOT free the returned pointer. */
+    rendered = printInput(ast);
+    free_Input(ast);
+    return rendered;
 }
 
 /* ── job table ─────────────────────────────────────────────────────────── */
@@ -129,19 +150,23 @@ static void signal_handler(int sig)
     write(STDOUT_FILENO, "\n", 1);
 }
 
-/* SIGCHLD handler: reap all finished background children without blocking.
-   Marks their job table entries; the REPL prints notifications at the prompt. */
+/* SIGCHLD handler: reap only tracked background children without blocking.
+   Foreground children are waited by their caller paths (waitpid in foreground
+   dispatch/pipeline), so they must not be consumed here. */
 static void sigchld_handler(int sig)
 {
     (void)sig;
     int saved_errno = errno;
     int status;
-    pid_t pid;
 
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+    for (int i = 0; i < s_job_count; i++)
     {
-        bg_job_t *j = job_by_pid(pid);
-        if (j && j->state == JOB_RUNNING)
+        bg_job_t *j = &s_jobs[i];
+        if (j->pid == 0 || j->state != JOB_RUNNING)
+            continue;
+
+        pid_t rc = waitpid(j->pid, &status, WNOHANG);
+        if (rc == j->pid)
         {
             if (WIFEXITED(status))
             {
@@ -238,7 +263,19 @@ static int dispatch_builtin(int argc, char *argv[])
     if (argv[0] == NULL)
         return 0;
 
-    const cmd_spec_t *spec = find_command(argv[0]);
+    const char *cmd_name = argv[0];
+    const cmd_spec_t *spec = find_command(cmd_name);
+    if (spec == NULL)
+    {
+        const char *base = argv0_basename(argv[0]);
+        if (base != NULL)
+        {
+            spec = find_command(base);
+            if (spec != NULL)
+                cmd_name = base;
+        }
+    }
+
     if (spec != NULL)
     {
         /* Assignment mode: internal commands run in a pthread and return
@@ -253,7 +290,19 @@ static int dispatch_builtin(int argc, char *argv[])
         builtin_thread_ctx_t ctx;
         ctx.spec = spec;
         ctx.argc = argc;
-        ctx.argv = argv;
+        char *argv_local[MAX_ARGS];
+        if (cmd_name != argv[0] && argc > 0 && argc < MAX_ARGS)
+        {
+            for (int i = 0; i < argc; i++)
+                argv_local[i] = argv[i];
+            argv_local[argc] = NULL;
+            argv_local[0] = (char *)cmd_name;
+            ctx.argv = argv_local;
+        }
+        else
+        {
+            ctx.argv = argv;
+        }
         ctx.status_fd = status_pipe[1];
 
         pthread_t tid;
@@ -286,7 +335,7 @@ static int dispatch_builtin(int argc, char *argv[])
         return 1;
     }
 
-    fprintf(stderr, "CoreShell: '%s': command not found\n", argv[0]);
+    fprintf(stderr, "CoreShell: unknown command '%s'\n", argv[0]);
     return 1;
 }
 
@@ -305,7 +354,10 @@ static int dispatch_external(int argc, char *argv[])
     if (pid == 0)
     {
         execvp(argv[0], argv);
-        perror(argv[0]);
+        if (errno == ENOENT && strchr(argv[0], '/') == NULL)
+            fprintf(stderr, "CoreShell: unknown command '%s'\n", argv[0]);
+        else
+            perror(argv[0]);
         _exit(127);
     }
 
@@ -330,6 +382,12 @@ static int dispatch_command(int argc, char *argv[])
         return 0;
 
     const cmd_spec_t *spec = find_command(argv[0]);
+    if (spec == NULL)
+    {
+        const char *base = argv0_basename(argv[0]);
+        if (base != NULL)
+            spec = find_command(base);
+    }
     if (spec != NULL)
         return dispatch_builtin(argc, argv);
 
@@ -344,7 +402,12 @@ static void exec_pipeline_stage(int argc, char *argv[])
 
     const cmd_spec_t *spec = find_command(argv[0]);
     if (spec != NULL)
-        _exit(spec->run(argc, argv));
+    {
+        int rc = spec->run(argc, argv);
+        fflush(stdout);
+        fflush(stderr);
+        _exit(rc);
+    }
 
     execvp(argv[0], argv);
     perror(argv[0]);
@@ -1151,10 +1214,22 @@ static void handle_llm_line(const char *query)
         }
         close(pipe_fd[1]);
 
-        /* Exec the local helper first so the repo works without PATH setup. */
-        execvp("./coresh_llm", (char *const[]){ "coresh_llm", (char *)query, NULL });
+        /* Try to find coresh_llm next to the CoreShell binary via /proc/self/exe. */
+        {
+            char self_path[4096];
+            ssize_t len = readlink("/proc/self/exe", self_path, sizeof(self_path) - 1);
+            if (len > 0) {
+                self_path[len] = '\0';
+                char *slash = strrchr(self_path, '/');
+                if (slash) {
+                    slash[1] = '\0';
+                    strncat(self_path, "coresh_llm", sizeof(self_path) - strlen(self_path) - 1);
+                    execv(self_path, (char *const[]){ "coresh_llm", (char *)query, NULL });
+                }
+            }
+        }
 
-        /* Fallback to PATH lookup if the local helper is not present. */
+        /* Fallback to PATH lookup. */
         execvp("coresh_llm", (char *const[]){ "coresh_llm", (char *)query, NULL });
 
         /* If execvp fails, exit with error code */
@@ -1384,13 +1459,22 @@ int main(int argc, char *argv[])
         }
         free(input);
 
-        if (strpbrk(expanded, "|<>&") != NULL)
+          /* BNFC grammar currently does not cover 2>&1 combinations or quoted
+              command forms; route those lines directly to the legacy parser to
+              avoid noisy syntax errors. */
+        const char *bnfc_line = NULL;
+          if (strstr(expanded, "2>&1") == NULL && strpbrk(expanded, "\"'") == NULL)
+            bnfc_line = normalize_line_with_bnfc(expanded);
+
+        char *line_to_run = bnfc_line != NULL ? (char *)bnfc_line : expanded;
+
+        if (strpbrk(line_to_run, "|<>&") != NULL)
         {
-            execute_pipeline(expanded);
+            execute_pipeline(line_to_run);
             continue;
         }
 
-        int nargs = parse_command(expanded, args);
+        int nargs = parse_command(line_to_run, args);
         if (nargs > 0)
             dispatch_command(nargs, args);
     }

@@ -19,7 +19,7 @@ static void build_cat_argtable(struct arg_lit  **help,
     *help_json = arg_lit0(NULL, "help-json", "print argument schema as JSON and exit");
     *json      = arg_lit0(NULL, "json",       "output file content as JSON");
     *number    = arg_lit0("n", "number",     "number all output lines");
-    *files     = arg_filen(NULL, NULL, "<file>", 1, 64, "files to concatenate");
+    *files     = arg_filen(NULL, NULL, "<file>", 0, 64, "files to concatenate");
     *end       = arg_end(20);
 
     static void *argtable[7];
@@ -93,6 +93,30 @@ int cat_run(int argc, char **argv)
     }
 
     int ret = 0;
+
+    if (files->count == 0)
+    {
+        if (json->count > 0)
+        {
+            printf("{\n  \"files\": [\n    {\n      \"path\": \"-\",\n      \"content\": ");
+            cat_json_content(stdin);
+            printf("\n    }\n  ]\n}\n");
+            arg_freetable(argtable, 6);
+            return 0;
+        }
+
+        long line_num = 1;
+        char buf[CAT_BUF];
+        while (fgets(buf, sizeof(buf), stdin) != NULL)
+        {
+            if (number->count > 0)
+                printf("%6ld\t%s", line_num++, buf);
+            else
+                fputs(buf, stdout);
+        }
+        arg_freetable(argtable, 6);
+        return 0;
+    }
 
     if (json->count > 0)
     {
@@ -168,6 +192,7 @@ void cat_print_usage(FILE *out)
     fprintf(out, "\nUsage: cat ");
     arg_print_syntax(out, argtable, "\n");
     fprintf(out, "\nConcatenate files and print to standard output.\n");
+    fprintf(out, "If no files are given, read from standard input.\n");
     fprintf(out, "With -n, each output line is prefixed with its sequential line number.\n");
     fprintf(out, "\nOptions:\n");
     arg_print_glossary(out, argtable, "  %-22s %s\n");
