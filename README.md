@@ -71,7 +71,7 @@ captures stdout/stderr via pipes.  On completion it produces:
 
 Both files are regenerated on every run and removed by `make clean`.
 
-### Test suites (164 test cases)
+### Test suites (170 test cases)
 
 | Suite | Cases | What is tested |
 |---|---|---|
@@ -91,9 +91,10 @@ Both files are regenerated on every run and removed by `make clean`.
 | `test_mkdir` | 3 | create, existing dir error, `--help` |
 | `test_rmdir` | 3 | remove empty, error, `--help` |
 | `test_touch` | 3 | create, update timestamp, `--help` |
-| `test_cmd_spec_metadata` | 19 | all 19 commands have name, summary, long_help, run, print_usage set |
-| `test_pkg_json` | 17 | all 17 `pkg.json` files contain all 6 required fields (incl. `files`) |
-| `test_docs_md` | 17 | all 17 `docs/<name>.md` files contain `## Usage` and `## Options` |
+| `test_rpc` | 6 | help/help-json, validation, timeout path, local line-protocol success, stable json keys |
+| `test_cmd_spec_metadata` | 20 | all 20 commands have name, summary, long_help, run, print_usage set |
+| `test_pkg_json` | 18 | all 18 `pkg.json` files contain all 6 required fields (incl. `files`) |
+| `test_docs_md` | 18 | all 18 `docs/<name>.md` files contain `## Usage` and `## Options` |
 | `test_multicall_dispatch` | 6 | Mode 2 (argv[1]), unknown command error, Mode 1 (symlink) |
 | `test_pwd_help_format` | 2 | `--logical` and `--physical` appear in help (format bug regression) |
 | `test_json_flags` | 6 | `--help-json` emits schema with `name`/`options`; `--json` emits result key |
@@ -107,6 +108,53 @@ Both files are regenerated on every run and removed by `make clean`.
 make debug
 gdb ./CoreShell
 ```
+
+## Week 8 Baseline: Socket Client Command
+
+CoreShell includes a Week 8 baseline socket-client built-in named `rpc`.
+
+### Goals covered
+
+- Client API pattern: `socket() -> connect() -> send()/recv() -> close()`
+- Explicit timeout and retry controls to avoid hanging shell sessions
+- Line-based minimal protocol (`request\\n` -> `response\\n`)
+- Input validation and bounded reads/writes
+- Help/registry integration consistent with command anatomy
+- Optional `--json` output with stable keys
+
+### Usage
+
+```bash
+rpc [-h] [--help-json] [--json] [-H HOST] [-p PORT] [-t SECONDS] [-r RETRIES] <message>
+```
+
+### Examples
+
+```bash
+# Simple request to local service
+rpc "ping"
+
+# Custom host/port with timeout and retries
+rpc -H 127.0.0.1 -p 5555 -t 2 -r 2 "health"
+
+# Structured output
+rpc --json -H 127.0.0.1 -p 5555 "status"
+```
+
+### JSON output schema (stable)
+
+```json
+{
+  "ok": true,
+  "host": "127.0.0.1",
+  "port": 5555,
+  "attempts": 1,
+  "response": "ACK:ping",
+  "error": null
+}
+```
+
+On errors, `ok` is `false`, `response` is `null`, and `error` contains a readable error string.
 
 ## Threading Architecture (Week Five)
 

@@ -312,3 +312,18 @@ user@CoreShell> pwd
 | `Makefile` | Added `-Icmd_jobs -Icmd_kill` to `INCLUDES`; added `cmd_jobs/cmd_jobs.c` and `cmd_kill/cmd_kill.c` to `SRC` |
 | `tests/test_runner.c` | Added `jobs`/`kill` to `s_commands[]`, added `test_jobs()` suite, wired into `main()` |
 | `README.md` | Updated Implementation Details, Project Structure, Test Suites; added Pipeline/Redirection/Jobs documentation section |
+
+---
+
+## Week Eight Baseline (Sockets Client)
+
+Session 8 baseline adds a new built-in command `rpc` that implements a minimal
+TCP socket client with line-based protocol, explicit timeout/retry controls,
+input validation, and optional `--json` output.
+
+### Baseline checks covered
+
+- Connect, exchange one request/response, and handle errors cleanly.
+- Timeouts prevent shell hangs on unreachable endpoints.
+- Human-readable output by default; stable JSON keys with `--json`.
+- Help and command registry integration match existing command anatomy.

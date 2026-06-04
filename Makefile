@@ -37,7 +37,8 @@ INCLUDES = \
     -Icmd_touch \
     -Icmd_pkg \
     -Icmd_jobs \
-    -Icmd_kill
+    -Icmd_kill \
+    -Icmd_rpc
 
 TARGET = CoreShell
 
@@ -69,6 +70,7 @@ SRC = main.c \
     cmd_pkg/cmd_pkg.c \
     cmd_jobs/cmd_jobs.c \
     cmd_kill/cmd_kill.c \
+    cmd_rpc/cmd_rpc.c \
     pkg/pkg.c
 
 OBJ = $(SRC:.c=.o)
