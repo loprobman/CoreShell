@@ -327,3 +327,40 @@ input validation, and optional `--json` output.
 - Timeouts prevent shell hangs on unreachable endpoints.
 - Human-readable output by default; stable JSON keys with `--json`.
 - Help and command registry integration match existing command anatomy.
+
+## Week Eight Step Two (MCP-Compatible Tool Bridge)
+
+The Node service now exposes a minimal line-based JSON tool bridge on
+`127.0.0.1:9000` with request types `tools/list` and `tools/call`.
+
+In addition, a native C binary `./mcp_server` now provides a slide-literal MCP
+server entry point on the same protocol and port for agent demos.
+
+### Exposed tools
+
+- `registry.packages.list`
+- `registry.package.lookup`
+- `shell.commands.list`
+- `shell.command.help`
+- `shell.command.run`
+- `filesystem.delete_older_than_days`
+
+### Allowlisted shell.command.run commands
+
+- `echo`
+- `pwd`
+- `help`
+- `ls`
+- `cat`
+- `stat`
+- `head`
+
+`shell.command.run` intentionally rejects stateful commands (for example `cd`) to
+avoid remote mutation of shell session state in this baseline MCP-compatible step.
+
+All MCP request/response events are logged to `artifacts/mcp_calls.log`.
+
+### Validation
+
+- Node test suite validates HTTP registry + MCP-compatible service behavior.
+- Current status: `npm test` passes (`14` tests, `14` pass, `0` fail).

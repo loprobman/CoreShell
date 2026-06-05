@@ -53,10 +53,75 @@ The server listens on port `3000` and exposes:
 npm test
 ```
 
+## MCP-Compatible Service Layer
+
+CoreShell provides two MCP-compatible servers:
+
+- Native C server (slide-literal path): `./mcp_server` on `127.0.0.1:9000`
+- Node compatibility bridge (used by Node tests): `server.js` (`createMcpServer()`)
+
+Both use line-based JSON with `tools/list` and `tools/call`.
+
+Build and launch the native C server with:
+
+```bash
+make mcp_server
+./mcp_server
+```
+
+This runs the native C MCP server on port `9000`.
+
+### Protocol
+
+- One JSON object per line
+- Requests use `type: "tools/list"` or `type: "tools/call"`
+- Responses are JSON objects with a stable `ok` field and either `tools` or `result`
+
+### Tools
+
+| Tool | Description |
+|---|---|
+| `registry.packages.list` | list all known packages |
+| `registry.package.lookup` | look up one package by `name` |
+| `shell.commands.list` | list CoreShell commands and their docs paths |
+| `shell.command.help` | return the help metadata for one command |
+| `shell.command.run` | run allowlisted shell commands (native C: `echo`, `pwd`, `help`; Node bridge additionally supports `ls`, `cat`, `stat`, `head`) |
+| `filesystem.delete_older_than_days` | delete files older than `days` under a workspace path (supports `dryRun`) |
+
+### Example
+
+```bash
+printf '{"type":"tools/list"}\n' | nc 127.0.0.1 9000
+
+printf '{"type":"tools/call","tool":"registry.package.lookup","arguments":{"name":"echo"}}\n' | nc 127.0.0.1 9000
+
+printf '{"type":"tools/call","tool":"filesystem.delete_older_than_days","arguments":{"path":"artifacts","days":30,"dryRun":true}}\n' | nc 127.0.0.1 9000
+```
+
+### Node tests
+
+```bash
+npm test
+```
+
+The Node test suite now covers both the HTTP registry and the MCP-compatible
+socket interface, including the shell command catalog, help bridge, and the
+read-only command runner.
+
+All MCP request/response events are logged to `artifacts/mcp_calls.log` as
+JSON lines.
+
+## Agent Demo (Slide Assignment)
+
+- Example agent script: `agent_mcp_example.py`
+- Demo prompt set: `mcp_demo_queries.md`
+- Captured run transcript: `mcp_demo_transcript.md`
+
 ## Testing
 
 ```bash
 make test                   # Build CoreShell + test runner, then execute all test cases
+make test-mcp-c             # Build and run native C MCP server protocol tests
 ./test_runner               # Run already-built test binary directly
 ```
 

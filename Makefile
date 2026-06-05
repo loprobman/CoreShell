@@ -80,8 +80,10 @@ PKG_SRC    = pkg/pkg.c
 
 LLM_TARGET = coresh_llm
 LLM_SRC    = coresh_llm.c
+MCP_TARGET = mcp_server
+MCP_SRC    = mcp_server.c
 
-all: $(BNFC_STAMP) $(TARGET) $(PKG_TARGET) $(LLM_TARGET)
+all: $(BNFC_STAMP) $(TARGET) $(PKG_TARGET) $(LLM_TARGET) $(MCP_TARGET)
 
 $(BNFC_STAMP): $(BNFC_GRAMMAR)
 >$(BNFC) --c $(BNFC_GRAMMAR)
@@ -116,6 +118,9 @@ $(PKG_TARGET): $(PKG_SRC)
 $(LLM_TARGET): $(LLM_SRC)
 >$(CC) $(CFLAGS) -o $(LLM_TARGET) $(LLM_SRC)
 
+$(MCP_TARGET): $(MCP_SRC)
+>$(CC) $(CFLAGS) -o $(MCP_TARGET) $(MCP_SRC)
+
 pkg/pkg.o: CFLAGS += -DPKG_NO_MAIN
 
 $(TARGET): $(BNFC_STAMP) $(OBJ)
@@ -128,7 +133,7 @@ debug: CFLAGS += -g -O0
 debug: clean $(TARGET)
 
 clean:
->rm -f $(OBJ) $(TARGET) $(PKG_TARGET) $(LLM_TARGET) $(TEST_OBJ) $(TEST_BIN) test_report.md test_output.log $(BNFC_STAMP)
+>rm -f $(OBJ) $(TARGET) $(PKG_TARGET) $(LLM_TARGET) $(MCP_TARGET) $(TEST_OBJ) $(TEST_BIN) $(MCP_C_TEST_BIN) test_report.md test_output.log $(BNFC_STAMP)
 >rm -rf bin/ build/
 
 # ── Test runner ──────────────────────────────────────────────────────── #
@@ -137,11 +142,21 @@ TEST_SRC = tests/test_runner.c
 TEST_OBJ = tests/test_runner.o
 TEST_BIN = test_runner
 
+MCP_C_TEST_SRC = tests/mcp_server_c_test.c
+MCP_C_TEST_BIN = tests/mcp_server_c_test
+
 test: $(TARGET) $(TEST_BIN)
 >@printf "Running CoreShell test suite...\n"
 >./$(TEST_BIN)
 
+test-mcp-c: $(MCP_TARGET) $(MCP_C_TEST_BIN)
+>@printf "Running native C MCP server test suite...\n"
+>./$(MCP_C_TEST_BIN)
+
 $(TEST_BIN): $(BNFC_STAMP) $(LIB_OBJ) $(TEST_OBJ)
 >$(CC) $(CFLAGS) $(INCLUDES) -o $(TEST_BIN) $(LIB_OBJ) $(TEST_OBJ) -lm
 
-.PHONY: all clean debug test pkg
+$(MCP_C_TEST_BIN): $(MCP_C_TEST_SRC)
+>$(CC) $(CFLAGS) $(INCLUDES) -o $(MCP_C_TEST_BIN) $(MCP_C_TEST_SRC)
+
+.PHONY: all clean debug test test-mcp-c pkg
