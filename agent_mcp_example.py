@@ -51,7 +51,9 @@ def query_agent(prompt: str):
 
 if __name__ == "__main__":
     print("Agent example ready. Ensure your MCP server is running: ./mcp_server")
-    print("Try 3 NL prompts:")
+    print("Try 5 NL prompts:")
     print("1) Show available tools")
     print("2) List CoreShell commands")
     print("3) Preview files older than 30 days under artifacts")
+    print("4) Find CoreShell commands related to printing the working directory")
+    print("5) What command should I use to list files in the current directory?")

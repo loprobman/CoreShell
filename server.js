@@ -8,6 +8,32 @@ const PORT = 3000;
 const MCP_PORT = 9000;
 const ARTIFACTS_DIR = path.join(__dirname, "artifacts");
 const MCP_CALL_LOG = path.join(ARTIFACTS_DIR, "mcp_calls.log");
+const STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "by",
+  "for",
+  "from",
+  "how",
+  "i",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "that",
+  "the",
+  "this",
+  "to",
+  "use",
+  "with",
+]);
 
 if (!fs.existsSync(ARTIFACTS_DIR)) {
   fs.mkdirSync(ARTIFACTS_DIR, { recursive: true });
@@ -213,7 +239,237 @@ function buildToolCatalog() {
         additionalProperties: false,
       },
     },
+    {
+      name: "rag.docs.search",
+      description: "Retrieve the most relevant CoreShell command docs for a natural-language query",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          topK: { type: "number" },
+        },
+        required: ["query"],
+        additionalProperties: false,
+      },
+      outputSchema: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            command: { type: "string" },
+            sourcePath: { type: "string" },
+            score: { type: "number" },
+            snippet: { type: "string" },
+          },
+          required: ["command", "sourcePath", "score", "snippet"],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      name: "rag.command.recommend",
+      description:
+        "Recommend one CoreShell command for a natural-language task, grounded in retrieved docs",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+        },
+        required: ["query"],
+        additionalProperties: false,
+      },
+      outputSchema: {
+        type: "object",
+        properties: {
+          command: { type: "string" },
+          rationale: { type: "string" },
+          citations: {
+            type: "array",
+            items: { type: "string" },
+          },
+        },
+        required: ["command", "rationale", "citations"],
+        additionalProperties: false,
+      },
+    },
   ];
+}
+
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_\-\s]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenize(value) {
+  const normalized = normalizeText(value);
+  if (!normalized) return [];
+  return normalized
+    .split(" ")
+    .filter((token) => token.length >= 2 && !STOP_WORDS.has(token));
+}
+
+function buildRagCorpus() {
+  const docs = [];
+  const catalog = loadCommandCatalog();
+  for (const command of catalog) {
+    const sourcePath = command.docsPath;
+    const absolutePath = path.join(__dirname, sourcePath);
+    let body = "";
+    try {
+      body = fs.readFileSync(absolutePath, "utf8");
+    } catch (_error) {
+      body = "";
+    }
+
+    const searchable = [command.name, command.summary, command.longDescription, body]
+      .join("\n")
+      .trim();
+
+    if (!searchable) {
+      continue;
+    }
+
+    docs.push({
+      command: command.name,
+      sourcePath,
+      searchable,
+      normalized: normalizeText(searchable),
+    });
+  }
+
+  return docs;
+}
+
+let ragCorpusCache = null;
+
+function getRagCorpus() {
+  if (!ragCorpusCache) {
+    ragCorpusCache = buildRagCorpus();
+  }
+  return ragCorpusCache;
+}
+
+function buildSnippet(documentText, terms) {
+  const lines = String(documentText || "").split(/\r?\n/);
+  const lowerTerms = terms.map((term) => term.toLowerCase());
+  for (const line of lines) {
+    const lowerLine = line.toLowerCase();
+    if (lowerTerms.some((term) => lowerLine.includes(term))) {
+      return line.trim().slice(0, 220);
+    }
+  }
+  return lines.find((line) => line.trim().length > 0)?.trim().slice(0, 220) || "";
+}
+
+function ragSearchDocs(args) {
+  const query = args && typeof args.query === "string" ? args.query.trim() : "";
+  const topKRaw = args && args.topK !== undefined ? Number(args.topK) : 3;
+  const topK = Number.isFinite(topKRaw) ? Math.min(Math.max(Math.floor(topKRaw), 1), 8) : 3;
+
+  if (!query) {
+    return {
+      ok: false,
+      tool: "rag.docs.search",
+      error: {
+        code: "BAD_ARGUMENTS",
+        message: "query is required",
+      },
+    };
+  }
+
+  const queryTerms = tokenize(query);
+  if (queryTerms.length === 0) {
+    return {
+      ok: false,
+      tool: "rag.docs.search",
+      error: {
+        code: "BAD_ARGUMENTS",
+        message: "query must include meaningful keywords",
+      },
+    };
+  }
+
+  const scored = getRagCorpus()
+    .map((doc) => {
+      let score = 0;
+      for (const term of queryTerms) {
+        const index = doc.normalized.indexOf(term);
+        if (index >= 0) {
+          score += 1;
+          if (index < 220) {
+            score += 0.25;
+          }
+        }
+      }
+      return { doc, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.doc.command.localeCompare(b.doc.command))
+    .slice(0, topK)
+    .map((item) => ({
+      command: item.doc.command,
+      sourcePath: item.doc.sourcePath,
+      score: Number(item.score.toFixed(2)),
+      snippet: buildSnippet(item.doc.searchable, queryTerms),
+    }));
+
+  return {
+    ok: true,
+    tool: "rag.docs.search",
+    result: scored,
+  };
+}
+
+function ragRecommendCommand(args) {
+  const query = args && typeof args.query === "string" ? args.query.trim() : "";
+  if (!query) {
+    return {
+      ok: false,
+      tool: "rag.command.recommend",
+      error: {
+        code: "BAD_ARGUMENTS",
+        message: "query is required",
+      },
+    };
+  }
+
+  const retrieval = ragSearchDocs({ query, topK: 3 });
+  if (!retrieval.ok) {
+    return {
+      ok: false,
+      tool: "rag.command.recommend",
+      error: retrieval.error,
+    };
+  }
+
+  const queryLower = query.toLowerCase();
+  let command = "help";
+
+  if (queryLower.includes("working directory") || queryLower.includes("where am i")) {
+    command = "pwd";
+  } else if (queryLower.includes("list") && queryLower.includes("file")) {
+    command = "ls";
+  } else if (queryLower.includes("show") && queryLower.includes("first")) {
+    command = "head";
+  } else if (retrieval.result.length > 0) {
+    command = `${retrieval.result[0].command} --help`;
+  }
+
+  return {
+    ok: true,
+    tool: "rag.command.recommend",
+    result: {
+      command,
+      rationale:
+        retrieval.result.length > 0
+          ? `Grounded recommendation from ${retrieval.result[0].sourcePath}`
+          : "No command docs matched strongly; fallback recommendation provided.",
+      citations: retrieval.result.map((entry) => entry.sourcePath),
+    },
+  };
 }
 
 function resolveWorkspacePath(rawPath) {
@@ -783,6 +1039,14 @@ function buildToolResponse(toolName, args) {
     return deleteOlderThanDays(args);
   }
 
+  if (toolName === "rag.docs.search") {
+    return ragSearchDocs(args);
+  }
+
+  if (toolName === "rag.command.recommend") {
+    return ragRecommendCommand(args);
+  }
+
   return {
     ok: false,
     tool: toolName || null,
@@ -921,4 +1185,6 @@ module.exports = {
   MCP_PORT,
   PORT,
   packages,
+  ragSearchDocs,
+  ragRecommendCommand,
 };

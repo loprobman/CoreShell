@@ -1,7 +1,7 @@
-# MCP Demo Transcript (3 NL Queries, Native C Server)
+# MCP Demo Transcript (5 NL Queries, Native C Server)
 
 Server: 127.0.0.1:9000 (./mcp_server)
-Date: 2026-06-04T20:57:54-04:00
+Date: 2026-06-05T01:21:05Z
 
 ## Query 1
 Prompt: Show available MCP tools.
@@ -10,7 +10,7 @@ Request:
 {"type":"tools/list"}
 
 Response:
-{"ok":true,"type":"tools/list","protocol":"mcp-line-json","tools":[{"name":"registry.packages.list","description":"List the CoreShell packages known to the registry"},{"name":"registry.package.lookup","description":"Look up one package by name"},{"name":"shell.commands.list","description":"List the CoreShell commands exposed by the shell"},{"name":"shell.command.help","description":"Return the help metadata for a CoreShell command"},{"name":"shell.command.run","description":"Run a small allowlisted shell command"},{"name":"filesystem.delete_older_than_days","description":"Delete files older than N days under a workspace path"}]}
+{"ok":true,"type":"tools/list","protocol":"mcp-line-json","tools":[{"name":"registry.packages.list","description":"List the CoreShell packages known to the registry"},{"name":"registry.package.lookup","description":"Look up one package by name"},{"name":"shell.commands.list","description":"List the CoreShell commands exposed by the shell"},{"name":"shell.command.help","description":"Return the help metadata for a CoreShell command"},{"name":"shell.command.run","description":"Run a small allowlisted shell command"},{"name":"filesystem.delete_older_than_days","description":"Delete files older than N days under a workspace path"},{"name":"rag.docs.search","description":"Retrieve the most relevant CoreShell command docs for a natural-language query"},{"name":"rag.command.recommend","description":"Recommend one CoreShell command for a natural-language task, grounded in retrieved docs"}]}
 
 ## Query 2
 Prompt: List CoreShell commands and show help for rpc.
@@ -35,3 +35,21 @@ Request:
 
 Response:
 {"ok":true,"tool":"filesystem.delete_older_than_days","result":{"path":"artifacts","days":30,"dryRun":true,"matchedCount":0,"deletedCount":0,"files":[]},"type":"tools/call","protocol":"mcp-line-json"}
+
+## Query 4
+Prompt: Find CoreShell commands related to printing the working directory.
+
+Request:
+{"type":"tools/call","tool":"rag.docs.search","arguments":{"query":"print working directory","topK":3}}
+
+Response:
+{"ok":true,"tool":"rag.docs.search","result":[{"command":"pwd","sourcePath":"cmd_pwd/docs/pwd.md","score":3.75,"snippet":"print working directory"},{"command":"cd","sourcePath":"cmd_cd/docs/cd.md","score":2.50,"snippet":"change the current directory"},{"command":"ls","sourcePath":"cmd_ls/docs/ls.md","score":2.25,"snippet":"list directory contents"}],"type":"tools/call","protocol":"mcp-line-json"}
+
+## Query 5
+Prompt: What command should I use to list files in the current directory?
+
+Request:
+{"type":"tools/call","tool":"rag.command.recommend","arguments":{"query":"How do I list files in the current directory?"}}
+
+Response:
+{"ok":true,"tool":"rag.command.recommend","result":{"command":"ls","rationale":"Grounded recommendation from cmd_ls/docs/ls.md","citations":["cmd_ls/docs/ls.md","cmd_cd/docs/cd.md","cmd_jobs/docs/jobs.md"]},"type":"tools/call","protocol":"mcp-line-json"}

@@ -91,6 +91,8 @@ static int test_tools_list(void)
     fails += expect_contains(resp, "\"ok\":true", "tools/list ok");
     fails += expect_contains(resp, "\"registry.package.lookup\"", "tools/list tool lookup");
     fails += expect_contains(resp, "\"filesystem.delete_older_than_days\"", "tools/list delete tool");
+    fails += expect_contains(resp, "\"rag.docs.search\"", "tools/list rag search");
+    fails += expect_contains(resp, "\"rag.command.recommend\"", "tools/list rag recommend");
     if (fails == 0) fprintf(stdout, "[PASS] tools/list\n");
     return fails;
 }
@@ -139,6 +141,44 @@ static int test_unknown_method(void)
     fails += expect_contains(resp, "\"ok\":false", "unknown method not ok");
     fails += expect_contains(resp, "\"UNKNOWN_METHOD\"", "unknown method code");
     if (fails == 0) fprintf(stdout, "[PASS] unknown method\n");
+    return fails;
+}
+
+static int test_rag_docs_search(void)
+{
+    char resp[BUF_CAP];
+    if (send_request("{\"type\":\"tools/call\",\"tool\":\"rag.docs.search\","
+                     "\"arguments\":{\"query\":\"print working directory\",\"topK\":3}}",
+                     resp, sizeof(resp)) != 0) {
+        fprintf(stderr, "[FAIL] rag.docs.search request failed\n");
+        return 1;
+    }
+
+    int fails = 0;
+    fails += expect_contains(resp, "\"ok\":true", "rag.docs.search ok");
+    fails += expect_contains(resp, "\"tool\":\"rag.docs.search\"", "rag.docs.search tool tag");
+    fails += expect_contains(resp, "\"command\":\"pwd\"", "rag.docs.search pwd hit");
+    fails += expect_contains(resp, "cmd_pwd/docs/pwd.md", "rag.docs.search source path");
+    if (fails == 0) fprintf(stdout, "[PASS] rag.docs.search\n");
+    return fails;
+}
+
+static int test_rag_command_recommend(void)
+{
+    char resp[BUF_CAP];
+    if (send_request("{\"type\":\"tools/call\",\"tool\":\"rag.command.recommend\","
+                     "\"arguments\":{\"query\":\"How do I print my working directory?\"}}",
+                     resp, sizeof(resp)) != 0) {
+        fprintf(stderr, "[FAIL] rag.command.recommend request failed\n");
+        return 1;
+    }
+
+    int fails = 0;
+    fails += expect_contains(resp, "\"ok\":true", "rag.command.recommend ok");
+    fails += expect_contains(resp, "\"tool\":\"rag.command.recommend\"", "rag.command.recommend tool tag");
+    fails += expect_contains(resp, "\"command\":\"pwd\"", "rag.command.recommend pwd");
+    fails += expect_contains(resp, "\"citations\":[", "rag.command.recommend citations");
+    if (fails == 0) fprintf(stdout, "[PASS] rag.command.recommend\n");
     return fails;
 }
 
@@ -199,6 +239,8 @@ int main(void)
     fails += test_lookup_echo();
     fails += test_delete_dry_run();
     fails += test_unknown_method();
+    fails += test_rag_docs_search();
+    fails += test_rag_command_recommend();
 
     stop_server();
 

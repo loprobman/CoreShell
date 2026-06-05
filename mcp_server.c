@@ -21,8 +21,27 @@
 #define SMALL_BUF 1024
 #define LOG_PATH "artifacts/mcp_calls.log"
 #define MAX_SCAN_FILES 256
+#define RAG_MAX_DOCS   64
+#define RAG_MAX_TERMS  48
+#define RAG_TEXT_MAX   16384
+#define RAG_SNIP_MAX   256
 
-static char g_workspace[PATH_MAX];
+typedef struct {
+    char command[SMALL_BUF];
+    char source_path[256];
+    char raw_text[RAG_TEXT_MAX];
+    char text[RAG_TEXT_MAX];
+} rag_doc_t;
+
+typedef struct {
+    size_t idx;
+    double score;
+} rag_hit_t;
+
+static char      g_workspace[PATH_MAX];
+static rag_doc_t g_rag_corpus[RAG_MAX_DOCS];
+static size_t    g_rag_count = 0;
+static bool      g_rag_ready = false;
 
 typedef struct {
     char **items;
@@ -289,7 +308,9 @@ static void build_tools_list_response(char *resp, size_t cap)
              "{\"name\":\"shell.commands.list\",\"description\":\"List the CoreShell commands exposed by the shell\"},"
              "{\"name\":\"shell.command.help\",\"description\":\"Return the help metadata for a CoreShell command\"},"
              "{\"name\":\"shell.command.run\",\"description\":\"Run a small allowlisted shell command\"},"
-             "{\"name\":\"filesystem.delete_older_than_days\",\"description\":\"Delete files older than N days under a workspace path\"}"
+             "{\"name\":\"filesystem.delete_older_than_days\",\"description\":\"Delete files older than N days under a workspace path\"},"
+             "{\"name\":\"rag.docs.search\",\"description\":\"Retrieve the most relevant CoreShell command docs for a natural-language query\"},"
+             "{\"name\":\"rag.command.recommend\",\"description\":\"Recommend one CoreShell command for a natural-language task, grounded in retrieved docs\"}"
              "]}");
 }
 
@@ -639,6 +660,278 @@ static void build_delete_older_than_days(const char *req, char *resp, size_t cap
     strvec_free(&matched);
 }
 
+/* ── RAG document retrieval ─────────────────────────────────────────── */
+
+static const char *const g_stop_words[] = {
+    "a","an","and","are","as","at","be","by","do","for","from",
+    "how","i","in","is","it","of","on","or","that","the","this",
+    "to","use","with",NULL};
+
+static bool is_stop_word(const char *word)
+{
+    for (size_t i = 0; g_stop_words[i] != NULL; i++) {
+        if (strcmp(word, g_stop_words[i]) == 0) return true;
+    }
+    return false;
+}
+
+static size_t rag_tokenize(const char *text, char terms[][64], size_t max_terms)
+{
+    size_t count = 0;
+    const char *p = text;
+    while (*p && count < max_terms) {
+        while (*p && !(isalnum((unsigned char)*p) || *p == '_' || *p == '-')) p++;
+        if (!*p) break;
+        const char *start = p;
+        while (*p && (isalnum((unsigned char)*p) || *p == '_' || *p == '-')) p++;
+        size_t len = (size_t)(p - start);
+        if (len < 2 || len >= 64) continue;
+        char word[64];
+        for (size_t k = 0; k < len; k++)
+            word[k] = (char)tolower((unsigned char)start[k]);
+        word[len] = '\0';
+        if (is_stop_word(word)) continue;
+        memcpy(terms[count++], word, len + 1);
+    }
+    return count;
+}
+
+static void rag_normalize(const char *src, char *dst, size_t cap)
+{
+    size_t o = 0;
+    for (size_t i = 0; src[i] && o + 1 < cap; i++) {
+        unsigned char c = (unsigned char)src[i];
+        if (isalnum(c) || c == '_' || c == '-') {
+            dst[o++] = (char)tolower(c);
+        } else {
+            if (o > 0 && dst[o - 1] != ' ')
+                dst[o++] = ' ';
+        }
+    }
+    dst[o] = '\0';
+}
+
+static void rag_build_corpus(void)
+{
+    if (g_rag_ready) return;
+    g_rag_count = 0;
+    DIR *root = opendir(g_workspace);
+    if (!root) { g_rag_ready = true; return; }
+
+    struct dirent *de;
+    while ((de = readdir(root)) != NULL && g_rag_count < RAG_MAX_DOCS) {
+        if (strncmp(de->d_name, "cmd_", 4) != 0) continue;
+        char pkg_path[PATH_MAX];
+        snprintf(pkg_path, sizeof(pkg_path), "%s/%s/pkg.json", g_workspace, de->d_name);
+
+        char cmd_name[SMALL_BUF], summary[SMALL_BUF], long_desc[2048];
+        read_pkg_field(pkg_path, "name",             cmd_name,  sizeof(cmd_name));
+        read_pkg_field(pkg_path, "description",      summary,   sizeof(summary));
+        read_pkg_field(pkg_path, "long_description", long_desc, sizeof(long_desc));
+        if (cmd_name[0] == '\0') continue;
+
+        char docs_path[PATH_MAX], docs[RAG_TEXT_MAX / 2];
+        snprintf(docs_path, sizeof(docs_path), "%s/cmd_%s/docs/%s.md",
+                 g_workspace, cmd_name, cmd_name);
+        docs[0] = '\0';
+        (void)read_file_to_buffer(docs_path, docs, sizeof(docs));
+
+        rag_doc_t *doc = &g_rag_corpus[g_rag_count++];
+        snprintf(doc->command,     sizeof(doc->command),     "%s", cmd_name);
+        snprintf(doc->source_path, sizeof(doc->source_path), "cmd_%s/docs/%s.md",
+                 cmd_name, cmd_name);
+        snprintf(doc->raw_text, sizeof(doc->raw_text), "%s\n%s\n%s\n%s",
+                 cmd_name, summary, long_desc, docs);
+        rag_normalize(doc->raw_text, doc->text, sizeof(doc->text));
+    }
+    closedir(root);
+    g_rag_ready = true;
+}
+
+static double rag_score(const rag_doc_t *doc, char (*terms)[64], size_t nterms)
+{
+    double score = 0.0;
+    for (size_t i = 0; i < nterms; i++) {
+        const char *found = strstr(doc->text, terms[i]);
+        if (!found) continue;
+        score += 1.0;
+        if ((size_t)(found - doc->text) < 200) score += 0.25;
+    }
+    return score;
+}
+
+static int rag_hit_cmp(const void *a, const void *b)
+{
+    const rag_hit_t *ha = (const rag_hit_t *)a;
+    const rag_hit_t *hb = (const rag_hit_t *)b;
+    if (hb->score > ha->score) return 1;
+    if (hb->score < ha->score) return -1;
+    return strcmp(g_rag_corpus[ha->idx].command, g_rag_corpus[hb->idx].command);
+}
+
+static size_t rag_top_hits(char (*terms)[64], size_t nterms,
+                            rag_hit_t *hits, size_t max_hits)
+{
+    size_t nhits = 0;
+    for (size_t i = 0; i < g_rag_count && nhits < RAG_MAX_DOCS; i++) {
+        double s = rag_score(&g_rag_corpus[i], terms, nterms);
+        if (s > 0.0) {
+            hits[nhits].idx   = i;
+            hits[nhits].score = s;
+            nhits++;
+        }
+    }
+    qsort(hits, nhits, sizeof(rag_hit_t), rag_hit_cmp);
+    if (nhits > max_hits) nhits = max_hits;
+    return nhits;
+}
+
+static void rag_snippet(const char *raw_text, char (*terms)[64], size_t nterms,
+                        char *out, size_t out_cap)
+{
+    const char *best = NULL;
+    const char *p    = raw_text;
+    while (*p && !best) {
+        const char *line_start = p;
+        const char *line_end   = strchr(p, '\n');
+        if (!line_end) line_end = p + strlen(p);
+        size_t line_len = (size_t)(line_end - line_start);
+        if (line_len < RAG_SNIP_MAX) {
+            char lc[RAG_SNIP_MAX];
+            for (size_t k = 0; k < line_len; k++)
+                lc[k] = (char)tolower((unsigned char)line_start[k]);
+            lc[line_len] = '\0';
+            for (size_t i = 0; i < nterms && !best; i++) {
+                if (strstr(lc, terms[i])) best = line_start;
+            }
+        }
+        p = (*line_end == '\n') ? line_end + 1 : line_end;
+        if (!*p) break;
+    }
+    if (!best) {
+        p = raw_text;
+        while (*p == '\n') p++;
+        best = p;
+    }
+    size_t o = 0;
+    while (*best && *best != '\n' && o + 1 < out_cap && o < 220)
+        out[o++] = *best++;
+    out[o] = '\0';
+}
+
+static void build_rag_docs_search(const char *req, char *resp, size_t cap)
+{
+    char query[SMALL_BUF];
+    if (!extract_json_string(req, "query", query, sizeof(query)) || query[0] == '\0') {
+        respond_error(resp, cap, "tools/call", "BAD_ARGUMENTS", "query is required");
+        return;
+    }
+
+    double top_k_d = 3.0;
+    (void)extract_json_number(req, "topK", &top_k_d);
+    size_t top_k = (top_k_d >= 1.0 && top_k_d <= 8.0) ? (size_t)top_k_d : 3;
+
+    char terms[RAG_MAX_TERMS][64];
+    size_t nterms = rag_tokenize(query, terms, RAG_MAX_TERMS);
+    if (nterms == 0) {
+        respond_error(resp, cap, "tools/call", "BAD_ARGUMENTS",
+                      "query must include meaningful keywords");
+        return;
+    }
+
+    rag_build_corpus();
+
+    rag_hit_t hits[RAG_MAX_DOCS];
+    size_t nhits = rag_top_hits(terms, nterms, hits, top_k);
+
+    size_t len = 0;
+    appendf(resp, cap, &len,
+            "{\"ok\":true,\"tool\":\"rag.docs.search\",\"result\":[");
+    for (size_t i = 0; i < nhits; i++) {
+        const rag_doc_t *doc = &g_rag_corpus[hits[i].idx];
+        char snip[RAG_SNIP_MAX];
+        rag_snippet(doc->raw_text, terms, nterms, snip, sizeof(snip));
+        char cmd_e[SMALL_BUF], src_e[512], snip_e[RAG_SNIP_MAX * 2];
+        json_escape(doc->command,     cmd_e,  sizeof(cmd_e));
+        json_escape(doc->source_path, src_e,  sizeof(src_e));
+        json_escape(snip,             snip_e, sizeof(snip_e));
+        appendf(resp, cap, &len,
+                "%s{\"command\":\"%s\",\"sourcePath\":\"%s\",\"score\":%.2f,\"snippet\":\"%s\"}",
+                i == 0 ? "" : ",", cmd_e, src_e, hits[i].score, snip_e);
+    }
+    appendf(resp, cap, &len, "],\"type\":\"tools/call\",\"protocol\":\"mcp-line-json\"}");
+}
+
+static void build_rag_command_recommend(const char *req, char *resp, size_t cap)
+{
+    char query[SMALL_BUF];
+    if (!extract_json_string(req, "query", query, sizeof(query)) || query[0] == '\0') {
+        respond_error(resp, cap, "tools/call", "BAD_ARGUMENTS", "query is required");
+        return;
+    }
+
+    char terms[RAG_MAX_TERMS][64];
+    size_t nterms = rag_tokenize(query, terms, RAG_MAX_TERMS);
+    if (nterms == 0) {
+        respond_error(resp, cap, "tools/call", "BAD_ARGUMENTS",
+                      "query must include meaningful keywords");
+        return;
+    }
+
+    rag_build_corpus();
+
+    rag_hit_t hits[RAG_MAX_DOCS];
+    size_t nhits = rag_top_hits(terms, nterms, hits, 3);
+
+    /* Apply grounding heuristics (mirrors Node bridge logic) */
+    char q_lower[SMALL_BUF];
+    size_t qlen = strlen(query);
+    if (qlen >= sizeof(q_lower)) qlen = sizeof(q_lower) - 1;
+    for (size_t i = 0; i < qlen; i++)
+        q_lower[i] = (char)tolower((unsigned char)query[i]);
+    q_lower[qlen] = '\0';
+
+    char top_cmd[SMALL_BUF * 2];
+    if (strstr(q_lower, "working directory") || strstr(q_lower, "where am i")) {
+        snprintf(top_cmd, sizeof(top_cmd), "pwd");
+    } else if (strstr(q_lower, "list") && strstr(q_lower, "file")) {
+        snprintf(top_cmd, sizeof(top_cmd), "ls");
+    } else if (strstr(q_lower, "show") && strstr(q_lower, "first")) {
+        snprintf(top_cmd, sizeof(top_cmd), "head");
+    } else if (nhits > 0) {
+        snprintf(top_cmd, sizeof(top_cmd), "%s --help",
+                 g_rag_corpus[hits[0].idx].command);
+    } else {
+        snprintf(top_cmd, sizeof(top_cmd), "help");
+    }
+
+    char rationale[SMALL_BUF * 2];
+    if (nhits > 0) {
+        snprintf(rationale, sizeof(rationale), "Grounded recommendation from %s",
+                 g_rag_corpus[hits[0].idx].source_path);
+    } else {
+        snprintf(rationale, sizeof(rationale),
+                 "No command docs matched strongly; fallback recommendation provided.");
+    }
+
+    char cmd_e[SMALL_BUF * 2], rat_e[SMALL_BUF * 4];
+    json_escape(top_cmd,   cmd_e, sizeof(cmd_e));
+    json_escape(rationale, rat_e, sizeof(rat_e));
+
+    size_t len = 0;
+    appendf(resp, cap, &len,
+            "{\"ok\":true,\"tool\":\"rag.command.recommend\",\"result\":{"
+            "\"command\":\"%s\",\"rationale\":\"%s\",\"citations\":[",
+            cmd_e, rat_e);
+    for (size_t i = 0; i < nhits; i++) {
+        char cit_e[512];
+        json_escape(g_rag_corpus[hits[i].idx].source_path, cit_e, sizeof(cit_e));
+        appendf(resp, cap, &len, "%s\"%s\"", i == 0 ? "" : ",", cit_e);
+    }
+    appendf(resp, cap, &len,
+            "]},\"type\":\"tools/call\",\"protocol\":\"mcp-line-json\"}");
+}
+
 static void handle_tools_call(const char *req, char *resp, size_t cap)
 {
     char tool[SMALL_BUF];
@@ -671,6 +964,14 @@ static void handle_tools_call(const char *req, char *resp, size_t cap)
     }
     if (strcmp(tool, "filesystem.delete_older_than_days") == 0) {
         build_delete_older_than_days(req, resp, cap);
+        return;
+    }
+    if (strcmp(tool, "rag.docs.search") == 0) {
+        build_rag_docs_search(req, resp, cap);
+        return;
+    }
+    if (strcmp(tool, "rag.command.recommend") == 0) {
+        build_rag_command_recommend(req, resp, cap);
         return;
     }
 

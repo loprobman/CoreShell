@@ -110,6 +110,8 @@ test("MCP tools/list returns the registry tools", async () => {
   assert.ok(response.tools.some((tool) => tool.name === "registry.packages.list"));
   assert.ok(response.tools.some((tool) => tool.name === "registry.package.lookup"));
   assert.ok(response.tools.some((tool) => tool.name === "shell.commands.list"));
+  assert.ok(response.tools.some((tool) => tool.name === "rag.docs.search"));
+  assert.ok(response.tools.some((tool) => tool.name === "rag.command.recommend"));
 });
 
 test("MCP tools/call returns a package lookup result", async () => {
@@ -298,6 +300,35 @@ test("MCP tools/call supports delete_older_than_days with dryRun and execute", a
   assert.equal(executeResponse.result.dryRun, false);
   assert.equal(executeResponse.result.deletedCount, 1);
   assert.equal(fs.existsSync(oldFile), false);
+});
+
+test("MCP tools/call retrieves command docs via RAG", async () => {
+  const response = await mcpRequest({
+    type: "tools/call",
+    tool: "rag.docs.search",
+    arguments: { query: "print working directory", topK: 3 },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.tool, "rag.docs.search");
+  assert.ok(Array.isArray(response.result));
+  assert.ok(response.result.length > 0);
+  assert.ok(response.result.some((entry) => entry.command === "pwd"));
+  assert.ok(response.result.some((entry) => /cmd_pwd\/docs\/pwd\.md$/.test(entry.sourcePath)));
+});
+
+test("MCP tools/call recommends command grounded by retrieved docs", async () => {
+  const response = await mcpRequest({
+    type: "tools/call",
+    tool: "rag.command.recommend",
+    arguments: { query: "How do I print my working directory?" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.tool, "rag.command.recommend");
+  assert.equal(response.result.command, "pwd");
+  assert.ok(Array.isArray(response.result.citations));
+  assert.ok(response.result.citations.some((entry) => /cmd_pwd\/docs\/pwd\.md$/.test(entry)));
 });
 
 test("MCP logs every request/response call", async () => {

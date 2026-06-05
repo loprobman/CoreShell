@@ -87,6 +87,8 @@ This runs the native C MCP server on port `9000`.
 | `shell.command.help` | return the help metadata for one command |
 | `shell.command.run` | run allowlisted shell commands (native C: `echo`, `pwd`, `help`; Node bridge additionally supports `ls`, `cat`, `stat`, `head`) |
 | `filesystem.delete_older_than_days` | delete files older than `days` under a workspace path (supports `dryRun`) |
+| `rag.docs.search` | retrieve top command-doc matches for a natural-language query |
+| `rag.command.recommend` | return one grounded command recommendation with citation paths |
 
 ### Example
 
@@ -96,6 +98,10 @@ printf '{"type":"tools/list"}\n' | nc 127.0.0.1 9000
 printf '{"type":"tools/call","tool":"registry.package.lookup","arguments":{"name":"echo"}}\n' | nc 127.0.0.1 9000
 
 printf '{"type":"tools/call","tool":"filesystem.delete_older_than_days","arguments":{"path":"artifacts","days":30,"dryRun":true}}\n' | nc 127.0.0.1 9000
+
+printf '{"type":"tools/call","tool":"rag.docs.search","arguments":{"query":"print working directory","topK":3}}\n' | nc 127.0.0.1 9000
+
+printf '{"type":"tools/call","tool":"rag.command.recommend","arguments":{"query":"How do I print my working directory?"}}\n' | nc 127.0.0.1 9000
 ```
 
 ### Node tests
