@@ -1,4 +1,4 @@
-# Week 8 — Architecture & Design: Socket Client, MCP, and RAG
+# Week 8 — Architecture & Design: Socket Client, MCP, RAG, and Agent Planning
 
 This document describes every component implemented during Week 8, the relationships
 between them, and step-by-step exercises for testing each layer interactively.
@@ -21,13 +21,15 @@ between them, and step-by-step exercises for testing each layer interactively.
    - 8.2 [Test the `rpc` built-in](#82-test-the-rpc-built-in)
    - 8.3 [Test the MCP tools/list and tools/call protocol](#83-test-the-mcp-toolslist-and-toolscall-protocol)
    - 8.4 [Test the RAG tools](#84-test-the-rag-tools)
+  - 8.4.1 [Test the agent planner tool](#841-test-the-agent-planner-tool)
+  - 8.4.5 [Test the @ query helper in the shell](#845-test-the--query-helper-in-the-shell)
    - 8.5 [Run the automated test suites](#85-run-the-automated-test-suites)
 
 ---
 
 ## 1. Overview
 
-Week 8 delivers three integrated layers on top of the existing CoreShell POSIX shell:
+Week 8 delivers four integrated layers on top of the existing CoreShell POSIX shell:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -52,6 +54,12 @@ Week 8 delivers three integrated layers on top of the existing CoreShell POSIX s
 │  │  RAG Engine   Layer 3 – rag.docs.search,           │ │
 │  │               rag.command.recommend                 │ │
 │  │  Corpus: cmd_*/pkg.json + cmd_*/docs/*.md           │ │
+│  └─────────────────────┬──────────────────────────────┘ │
+│                        │                                │
+│  ┌─────────────────────▼──────────────────────────────┐ │
+│  │  Agent Planner Layer 4 – agent.command.plan        │ │
+│  │  Node: OpenAI Responses API + local fallback       │ │
+│  │  C: proxy to POST /agent/command or local fallback │ │
 │  └────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────┘
          │ JSON lines logged to artifacts/mcp_calls.log
@@ -61,17 +69,19 @@ Week 8 delivers three integrated layers on top of the existing CoreShell POSIX s
 
 ## 2. Component Map
 
-| Component | Language | File(s) | Role |
-|---|---|---|---|
-| `rpc` built-in | C | `cmd_rpc/cmd_rpc.c`, `cmd_rpc/cmd_rpc.h` | Shell command that sends one line to a TCP service and prints the response |
-| Node.js MCP bridge | JavaScript | `server.js` | TCP line-JSON MCP-compatible server; also hosts HTTP package registry on port 3000 |
-| Native C MCP server | C | `mcp_server.c` | Standalone compiled binary; same MCP protocol, no Node.js dependency |
-| RAG engine (Node) | JavaScript | `server.js` (`ragSearchDocs`, `ragRecommendCommand`) | Corpus-backed retrieval built into the Node bridge |
-| RAG engine (C) | C | `mcp_server.c` (`build_rag_docs_search`, `build_rag_command_recommend`) | Same logic in C for the native server |
-| MCP call log | Text | `artifacts/mcp_calls.log` | JSON-lines log of every request/response pair |
-| Agent example | Python | `agent_mcp_example.py` | Demo script showing how an LLM agent calls MCP tools |
-| Demo queries | Markdown | `mcp_demo_queries.md` | 5 natural-language prompts used to validate the implementation |
-| Demo transcript | Markdown | `mcp_demo_transcript.md` | Captured live output from the 5 queries |
+| Component           | Language   | File(s) | Role |
+|---------------------|------------|---|---|
+| `rpc` built-in      | C          | `cmd_rpc/cmd_rpc.c`, `cmd_rpc/cmd_rpc.h` | Shell command that sends one line to a TCP service and prints the response |
+| Node.js MCP bridge  | JavaScript | `server.js` | TCP line-JSON MCP-compatible server; also hosts HTTP package registry on port 3000 |
+| Native C MCP server | C          | `mcp_server.c` | Standalone compiled binary; same MCP protocol, no Node.js dependency |
+| RAG engine (Node)   | JavaScript | `server.js` (`ragSearchDocs`, `ragRecommendCommand`) | Corpus-backed retrieval built into the Node bridge |
+| RAG engine (C)      | C          | `mcp_server.c` (`build_rag_docs_search`, `build_rag_command_recommend`) | Same logic in C for the native server |
+| Agent planner (Node) | JavaScript | `server.js` (`agentPlanCommand`, `POST /agent/command`) | OpenAI-backed command planner with deterministic local fallback |
+| Agent planner (C) | C | `mcp_server.c` (`build_agent_command_plan`) | Proxies to the Node agent endpoint on port 3000, or falls back to local RAG |
+| MCP call log        | Text       | `artifacts/mcp_calls.log` | JSON-lines log of every request/response pair |
+| Agent example       | Python     | `agent_mcp_example.py` | Demo script showing how an LLM agent calls MCP tools |
+| Demo queries        | Markdown   | `mcp_demo_queries.md` | 6 natural-language prompts used to validate the implementation |
+| Demo transcript     | Markdown   | `mcp_demo_transcript.md` | Captured live output from the 6 queries |
 
 ---
 
@@ -133,24 +143,26 @@ Both servers implement the same **line-based JSON protocol**:
 ### 4.1 Node.js MCP Bridge (`server.js`)
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  server.js                                           │
-│                                                      │
-│  HTTP  port 3000          TCP  port 9000             │
-│  ┌───────────────┐        ┌──────────────────────┐   │
-│  │ Express       │        │ net.createServer()   │   │
-│  │ GET /packages │        │ createMcpServer()    │   │
-│  │ GET /packages │        │                      │   │
-│  │   /:name      │        │  ┌────────────────┐  │   │
-│  └───────────────┘        │  │ buildToolCatalog│  │   │
-│                           │  │ buildToolResponse│ │   │
+┌───────────────────────────────────────────────────────┐
+│  server.js                                            │
+│                                                       │
+│  HTTP  port 3000           TCP  port 9000             │
+│  ┌───────────────┐         ┌──────────────────────┐   │
+│  │ Express       │         │ net.createServer()   │   │
+│  │ GET /packages │         │ createMcpServer()    │   │
+│  │ GET /packages │         │                      │   │
+│  │   /:name      │         │  ┌────────────────┐  │   │
+│  │ POST /agent/  │         │  │ buildToolCatalog│  │   │
+│  │   command     │         │  │ buildToolResponse│ │   │
+│  └───────────────┘         │  │ buildToolCatalog│  │   │
 │  loadPackagesFromModules() │  │ ragSearchDocs  │  │   │
 │  loadCommandCatalog()      │  │ ragRecommend.. │  │   │
+│  agentPlanCommand()        │  │ agent.command..│  │   │
 │  loadCommandHelp()         │  │ deleteOlder..  │  │   │
 │  runShellCommand()         │  │ logMcpCall()   │  │   │
-│                           │  └────────────────┘  │   │
-│                           └──────────────────────┘   │
-└──────────────────────────────────────────────────────┘
+│                            │  └────────────────┘  │   │
+│                            └──────────────────────┘   │
+└───────────────────────────────────────────────────────┘
 ```
 
 **Start:**
@@ -180,7 +192,8 @@ main()
         │           ├── shell.command.run
         │           ├── filesystem.delete_older_than_days
         │           ├── rag.docs.search
-        │           └── rag.command.recommend
+      │           ├── rag.command.recommend
+      │           └── agent.command.plan
         ├── log_call(req, resp)     → artifacts/mcp_calls.log
         └── send(resp + "\n")
 ```
@@ -244,6 +257,35 @@ removal. The same corpus is used for both RAG tools.
 | Snippet | `buildSnippet()` — first matching line | `rag_snippet()` — first matching line |
 | Recommend | `ragRecommendCommand()` | `build_rag_command_recommend()` |
 
+## 5.1 Layer 4 — Agent Planner
+
+The agent planner adds an LLM-backed planning layer above retrieval.
+
+```
+Query: "How do I print my working directory?"
+        │
+        ▼
+  agent.command.plan
+        │
+        ├── rag.docs.search topK=3
+        │     → grounding citations from local docs corpus
+        │
+        ├── Node mode:
+        │     call OpenAI Responses API if OPENAI_API_KEY is set
+        │     else use deterministic local fallback
+        │
+        ├── Native C mode:
+        │     POST /agent/command on 127.0.0.1:3000 if available
+        │     else use deterministic local fallback
+        │
+        ▼
+  Result:
+  { command, rationale, citations[], trace[], provider, model }
+```
+
+`rag.command.recommend` is the deterministic retrieval tool.
+`agent.command.plan` is the orchestration tool that can call OpenAI while staying grounded in the same corpus.
+
 ---
 
 ## 6. Data Flow Diagrams
@@ -289,11 +331,13 @@ removal. The same corpus is used for both RAG tools.
   main.c  handle_llm_line()
         │
         ├── fork()
-        │     └── execvp("coresh_llm", ["coresh_llm", "list all C files"])
-        │              └── mock_llm() → "find . -type f -name '*.c'"
+      │     └── execvp("coresh_llm", ["coresh_llm", "list all C files"])
+      │              ├── POST /agent/command on 127.0.0.1:3000
+      │              │     └── agentPlanCommand()
+      │              └── fallback: mock_llm()
         │
         ├── read stdout line → suggested command
-        ├── print "Suggested command: find . -type f -name '*.c'"
+      ├── print "Suggested command: ..."
         ├── prompt "Run this? (y/n)"
         └── if y → dispatch_command(suggested)
 ```
@@ -314,6 +358,7 @@ All tools are exposed on both servers unless marked.
 | `filesystem.delete_older_than_days` | `path: string`, `days: number`, `dryRun?: boolean` | `{path, days, dryRun, matchedCount, deletedCount, files[]}` |
 | `rag.docs.search` | `query: string`, `topK?: number (1–8, default 3)` | Array of `{command, sourcePath, score, snippet}` |
 | `rag.command.recommend` | `query: string` | `{command, rationale, citations[]}` |
+| `agent.command.plan` | `query: string` | `{command, rationale, citations[], trace[], provider, model}` |
 
 > \* `ls`, `cat`, `stat`, `head` are available on the Node.js bridge only; native C mode exposes `echo`, `pwd`, `help`.
 
@@ -340,7 +385,7 @@ ls -l CoreShell mcp_server coresh_llm
 
 ### 8.2 Test the `rpc` built-in
 
-**Step 1 — Start the Node.js registry server (provides a line-based listener on port 3000 via MCP port 9000)**
+**Step 1 — Start the Node.js registry + agent server (HTTP on port 3000, MCP on port 9000)**
 
 ```bash
 npm start &
@@ -382,7 +427,8 @@ Expected: error message and non-zero exit status within ~1 second.
 **Step 6 — Stop the registry server**
 
 ```bash
-kill %1
+ss -ltnp | grep :9000
+kill <pid>
 ```
 
 ---
@@ -406,8 +452,8 @@ Expected output: `CoreShell native C MCP server listening on 127.0.0.1:9000`
 printf '{"type":"tools/list"}\n' | nc 127.0.0.1 9000
 ```
 
-Expected: `"ok":true` and a `"tools"` array with 8 entries including
-`rag.docs.search` and `rag.command.recommend`.
+Expected: `"ok":true` and a `"tools"` array with 9 entries including
+`rag.docs.search`, `rag.command.recommend`, and `agent.command.plan`.
 
 **Step 3 — Look up a package**
 
@@ -469,7 +515,8 @@ Expected: a JSON line with `ts`, `request`, and `response` keys.
 **Step 10 — Stop the server**
 
 ```bash
-kill %1
+ss -ltnp | grep :9000
+kill <pid>
 ```
 
 ---
@@ -540,14 +587,177 @@ Expected: `"ok":false`, `"code":"BAD_ARGUMENTS"`.
 **Step 7 — Stop the server**
 
 ```bash
-kill %1
+ss -ltnp | grep :9000
+kill <pid>
+```
+
+---
+
+### 8.4.1 Test the agent planner tool
+
+Start the Node server so the HTTP planner endpoint is available:
+
+```bash
+npm start &
+```
+
+**Step 1 — Call the MCP agent planner through the Node server**
+
+```bash
+printf '{"type":"tools/call","tool":"agent.command.plan","arguments":{"query":"How do I print my working directory?"}}\n' | nc 127.0.0.1 9000
+```
+
+Expected:
+- `"ok":true`
+- `"tool":"agent.command.plan"`
+- `"command":"pwd"`
+- `"provider":"openai"` if `OPENAI_API_KEY` is set, otherwise a fallback provider string
+- non-empty `trace` array
+
+**Step 2 — Call the HTTP planner endpoint directly**
+
+```bash
+curl -s http://127.0.0.1:3000/agent/command \
+      -H 'Content-Type: application/json' \
+      -d '{"query":"List the files in this directory"}'
+```
+
+Expected: JSON payload containing `command`, `rationale`, `citations`, `trace`, `provider`, and `model`.
+
+**Step 3 — Verify the native C server proxy path**
+
+Start the native C server while the Node server is still running:
+
+```bash
+./mcp_server &
+printf '{"type":"tools/call","tool":"agent.command.plan","arguments":{"query":"How do I print my working directory?"}}\n' | nc 127.0.0.1 9000
+```
+
+Expected: the native C response returns the same agent planner shape, using the Node planner when port 3000 is available.
+
+**Step 4 — Stop the servers**
+
+```bash
+ss -ltnp | grep -E ':3000|:9000'
+kill <pid>
+```
+
+---
+
+### 8.4.5 Test the @ query helper in the shell
+
+The `@` prefix triggers the **coresh_llm** helper, which now prefers the Node HTTP agent planner on port 3000 and falls back to local rules if the HTTP planner is unavailable.
+
+**Step 1 — Build the shell and helpers**
+
+```bash
+make
+```
+
+Verify binaries:
+```bash
+ls -l CoreShell coresh_llm mcp_server
+```
+
+**Step 2 — Start the Node server (required for the HTTP agent planner)**
+
+```bash
+npm start &
+```
+
+Expected: package registry and MCP listener start, and `POST /agent/command` is available on port 3000.
+
+**Step 3 — Start the CoreShell REPL**
+
+```bash
+./CoreShell
+```
+
+Expected: `coresh>` prompt appears.
+
+**Step 4 — Issue an @ query**
+
+```
+coresh> @list all files in current directory
+```
+
+Expected output sequence:
+```
+Suggested command: ls
+Run this? (y/n):
+```
+
+**Step 5 — Accept the suggestion**
+
+```
+y
+```
+
+Expected: `ls` runs, showing files in the current directory.
+
+**Step 6 — Try another @ query with a different natural-language request**
+
+```
+coresh> @show first 10 lines of Makefile
+```
+
+Expected: Suggestion is `head -n 10 Makefile` or similar.
+
+**Step 7 — Try an ambiguous query**
+
+```
+coresh> @where am I
+```
+
+Expected: Suggestion is `pwd`.
+
+**Step 8 — Reject a suggestion**
+
+```
+coresh> @print current working directory
+```
+
+After seeing the suggestion, answer:
+```
+n
+```
+
+Expected: Command does not run; prompt returns to `coresh>`.
+
+**Step 9 — Verify the MCP call log**
+
+```bash
+tail -5 artifacts/mcp_calls.log
+```
+
+Expected: Last few entries show `"tool":"agent.command.plan"`, plus grounding calls such as `rag.docs.search` when the planner fallback runs.
+
+**Step 10 — Stop the Node server and verify local helper fallback**
+
+```bash
+ss -ltnp | grep :3000
+kill <pid>
+```
+
+Then run another query:
+
+```
+coresh> @where am I
+```
+
+Expected: `coresh_llm` still returns a suggestion using its built-in local fallback logic.
+
+**Step 11 — Exit the shell**
+
+```
+coresh> exit
 ```
 
 ---
 
 ### 8.5 Run the automated test suites
 
-**C shell tests (170 cases)**
+**C shell tests (175 cases + @query integration)**
 
 ```bash
 make test
@@ -555,7 +765,7 @@ make test
 
 Expected: all test suites PASS, `test_report.md` generated.
 
-**Native C MCP server protocol tests (6 cases)**
+**Native C MCP server protocol tests (7 cases)**
 
 ```bash
 make test-mcp-c
@@ -569,10 +779,11 @@ Expected:
 [PASS] unknown method
 [PASS] rag.docs.search
 [PASS] rag.command.recommend
+[PASS] agent.command.plan
 All native C MCP server tests passed.
 ```
 
-**Node.js MCP + registry tests (16 cases)**
+**Node.js MCP + registry tests (18 cases)**
 
 ```bash
 npm test
@@ -591,12 +802,14 @@ Expected:
 ✔ MCP tools/call supports delete_older_than_days with dryRun and execute
 ✔ MCP tools/call retrieves command docs via RAG
 ✔ MCP tools/call recommends command grounded by retrieved docs
+✔ MCP tools/call plans a command via agent fallback when OpenAI is not configured
+✔ MCP tools/call plans a command via mocked OpenAI response
 ✔ MCP logs every request/response call
 ✔ MCP rejects unknown methods
 ✔ GET /packages returns full package list
 ✔ GET /packages/:name returns a matching package
 ✔ GET /packages/:name returns stable 404 error payload
-pass 16 / fail 0
+pass 18 / fail 0
 ```
 
 ---
@@ -606,8 +819,19 @@ pass 16 / fail 0
 | Layer | What was built | Files |
 |---|---|---|
 | **1 — rpc** | TCP socket client built-in, full arg parsing, timeout, retries, JSON output | `cmd_rpc/` |
-| **2 — MCP Node bridge** | Line-JSON TCP server on port 9000, 8 tools, call logging | `server.js`, `tests/mcp-server.test.js` |
-| **2 — MCP native C** | Same protocol compiled to standalone ELF binary | `mcp_server.c`, `tests/mcp_server_c_test.c` |
+| **2 — MCP Node bridge** | Line-JSON TCP server on port 9000, HTTP registry + agent endpoint on port 3000, 9 tools, call logging | `server.js`, `tests/mcp-server.test.js` |
+| **2 — MCP native C** | Same protocol compiled to standalone ELF binary, with proxy-or-fallback agent planning | `mcp_server.c`, `tests/mcp_server_c_test.c` |
 | **3 — RAG Node** | Local corpus retrieval over command docs, search + recommend | `server.js` |
 | **3 — RAG C** | Same retrieval logic in C, full parity with Node bridge | `mcp_server.c` |
+| **4 — Agent planning** | OpenAI-backed planner in Node, proxy-or-fallback planner in C, shared `@` helper endpoint | `server.js`, `mcp_server.c`, `coresh_llm.c` |
 | **Artifacts** | Call log, agent demo, query set, live transcript | `artifacts/`, `agent_mcp_example.py`, `mcp_demo_*.md` |
+
+---
+
+printf '{"type":"tools/call","tool":"agent.command.plan","arguments":{"query":"list files"}}\n' | nc 127.0.0.1 9000
+unset CORESH_OPENAI_MOCK_RESPONSE OPENAI_API_KEY
+
+# Native C planner path (proxy or fallback)
+./mcp_server &
+printf '{"type":"tools/call","tool":"agent.command.plan","arguments":{"query":"list files"}}\n' | nc 127.0.0.1 9000
+```

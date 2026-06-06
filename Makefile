@@ -144,10 +144,14 @@ TEST_BIN = test_runner
 
 MCP_C_TEST_SRC = tests/mcp_server_c_test.c
 MCP_C_TEST_BIN = tests/mcp_server_c_test
+AT_QUERY_TEST_SRC = tests/at_query_test.c
+AT_QUERY_TEST_BIN = tests/at_query_test
 
-test: $(TARGET) $(TEST_BIN)
+test: $(TARGET) $(TEST_BIN) $(AT_QUERY_TEST_BIN)
 >@printf "Running CoreShell test suite...\n"
 >./$(TEST_BIN)
+>@printf "Running @query integration test...\n"
+>./$(AT_QUERY_TEST_BIN)
 
 test-mcp-c: $(MCP_TARGET) $(MCP_C_TEST_BIN)
 >@printf "Running native C MCP server test suite...\n"
@@ -158,5 +162,8 @@ $(TEST_BIN): $(BNFC_STAMP) $(LIB_OBJ) $(TEST_OBJ)
 
 $(MCP_C_TEST_BIN): $(MCP_C_TEST_SRC)
 >$(CC) $(CFLAGS) $(INCLUDES) -o $(MCP_C_TEST_BIN) $(MCP_C_TEST_SRC)
+
+$(AT_QUERY_TEST_BIN): $(AT_QUERY_TEST_SRC)
+>$(CC) $(CFLAGS) $(INCLUDES) -o $(AT_QUERY_TEST_BIN) $(AT_QUERY_TEST_SRC)
 
 .PHONY: all clean debug test test-mcp-c pkg

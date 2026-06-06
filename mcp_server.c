@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -92,6 +93,40 @@ static int appendf(char *dst, size_t cap, size_t *len, const char *fmt, ...)
     if ((size_t)wrote >= cap - *len) return -1;
     *len += (size_t)wrote;
     return 0;
+}
+
+static bool copy_string(char *dst, size_t cap, const char *src)
+{
+    size_t n = strlen(src ? src : "");
+    if (n + 1 > cap) return false;
+    memcpy(dst, src, n + 1);
+    return true;
+}
+
+static bool build_path_parts(char *out, size_t cap,
+                             const char *a,
+                             const char *b,
+                             const char *c,
+                             const char *d,
+                             const char *e)
+{
+    const char *parts[5] = { a, b, c, d, e };
+    size_t used = 0;
+
+    if (cap == 0) return false;
+    out[0] = '\0';
+
+    for (size_t i = 0; i < 5; i++) {
+        const char *part = parts[i];
+        if (!part || part[0] == '\0') continue;
+        size_t n = strlen(part);
+        if (used + n + 1 > cap) return false;
+        memcpy(out + used, part, n);
+        used += n;
+    }
+
+    out[used] = '\0';
+    return true;
 }
 
 static void json_escape(const char *src, char *dst, size_t cap)
@@ -310,7 +345,8 @@ static void build_tools_list_response(char *resp, size_t cap)
              "{\"name\":\"shell.command.run\",\"description\":\"Run a small allowlisted shell command\"},"
              "{\"name\":\"filesystem.delete_older_than_days\",\"description\":\"Delete files older than N days under a workspace path\"},"
              "{\"name\":\"rag.docs.search\",\"description\":\"Retrieve the most relevant CoreShell command docs for a natural-language query\"},"
-             "{\"name\":\"rag.command.recommend\",\"description\":\"Recommend one CoreShell command for a natural-language task, grounded in retrieved docs\"}"
+             "{\"name\":\"rag.command.recommend\",\"description\":\"Recommend one CoreShell command for a natural-language task, grounded in retrieved docs\"},"
+             "{\"name\":\"agent.command.plan\",\"description\":\"Use an OpenAI-backed agent to suggest one CoreShell command with grounding and execution notes\"}"
              "]}");
 }
 
@@ -331,7 +367,10 @@ static void build_registry_packages_list(char *resp, size_t cap)
         if (strncmp(de->d_name, "cmd_", 4) != 0) continue;
 
         char pkg_path[PATH_MAX];
-        snprintf(pkg_path, sizeof(pkg_path), "%s/%s/pkg.json", g_workspace, de->d_name);
+        if (!build_path_parts(pkg_path, sizeof(pkg_path),
+                              g_workspace, "/", de->d_name, "/pkg.json", "")) {
+            continue;
+        }
 
         char name[SMALL_BUF], version[SMALL_BUF];
         read_pkg_field(pkg_path, "name", name, sizeof(name));
@@ -340,7 +379,11 @@ static void build_registry_packages_list(char *resp, size_t cap)
 
         char name_esc[SMALL_BUF], ver_esc[SMALL_BUF], url_esc[SMALL_BUF * 2];
         char url[SMALL_BUF * 2];
-        snprintf(url, sizeof(url), "http://localhost:3000/downloads/%s-%s.tar.gz", name, version);
+        size_t url_len = 0;
+        if (appendf(url, sizeof(url), &url_len,
+                "http://localhost:3000/downloads/%s-%s.tar.gz", name, version) != 0) {
+            continue;
+        }
         json_escape(name, name_esc, sizeof(name_esc));
         json_escape(version, ver_esc, sizeof(ver_esc));
         json_escape(url, url_esc, sizeof(url_esc));
@@ -363,7 +406,11 @@ static void build_registry_package_lookup(const char *req, char *resp, size_t ca
     }
 
     char pkg_path[PATH_MAX];
-    snprintf(pkg_path, sizeof(pkg_path), "%s/cmd_%s/pkg.json", g_workspace, name);
+    if (!build_path_parts(pkg_path, sizeof(pkg_path),
+                          g_workspace, "/cmd_", name, "/pkg.json", "")) {
+        respond_error(resp, cap, "tools/call", "BAD_ARGUMENTS", "command path is too long");
+        return;
+    }
 
     char found_name[SMALL_BUF], version[SMALL_BUF];
     read_pkg_field(pkg_path, "name", found_name, sizeof(found_name));
@@ -380,7 +427,12 @@ static void build_registry_package_lookup(const char *req, char *resp, size_t ca
 
     char name_esc[SMALL_BUF], ver_esc[SMALL_BUF], url_esc[SMALL_BUF * 2];
     char url[SMALL_BUF * 2];
-    snprintf(url, sizeof(url), "http://localhost:3000/downloads/%s-%s.tar.gz", found_name, version);
+    size_t url_len = 0;
+    if (appendf(url, sizeof(url), &url_len,
+                "http://localhost:3000/downloads/%s-%s.tar.gz", found_name, version) != 0) {
+        respond_error(resp, cap, "tools/call", "COMMAND_EXECUTION_FAILED", "download URL is too long");
+        return;
+    }
     json_escape(found_name, name_esc, sizeof(name_esc));
     json_escape(version, ver_esc, sizeof(ver_esc));
     json_escape(url, url_esc, sizeof(url_esc));
@@ -413,7 +465,10 @@ static void build_shell_commands_list(char *resp, size_t cap)
         if (strncmp(de->d_name, "cmd_", 4) != 0) continue;
 
         char pkg_path[PATH_MAX];
-        snprintf(pkg_path, sizeof(pkg_path), "%s/%s/pkg.json", g_workspace, de->d_name);
+        if (!build_path_parts(pkg_path, sizeof(pkg_path),
+                              g_workspace, "/", de->d_name, "/pkg.json", "")) {
+            continue;
+        }
 
         char name[SMALL_BUF], summary[SMALL_BUF], long_desc[2048];
         read_pkg_field(pkg_path, "name", name, sizeof(name));
@@ -421,18 +476,23 @@ static void build_shell_commands_list(char *resp, size_t cap)
         read_pkg_field(pkg_path, "long_description", long_desc, sizeof(long_desc));
         if (name[0] == '\0') continue;
 
-        char name_esc[SMALL_BUF], sum_esc[SMALL_BUF], long_esc[2048], docs_esc[SMALL_BUF * 2];
-        char docs[SMALL_BUF * 2];
-        snprintf(docs, sizeof(docs), "cmd_%s/docs/%s.md", name, name);
+        char name_esc[SMALL_BUF], sum_esc[SMALL_BUF], long_esc[2048], docs_esc[4096];
+        char docs[4096];
+        if (!build_path_parts(docs, sizeof(docs), "cmd_", name, "/docs/", name, ".md")) {
+            continue;
+        }
         json_escape(name, name_esc, sizeof(name_esc));
         json_escape(summary, sum_esc, sizeof(sum_esc));
         json_escape(long_desc, long_esc, sizeof(long_esc));
         json_escape(docs, docs_esc, sizeof(docs_esc));
 
-        char row[4096];
-        snprintf(row, sizeof(row),
-                 "{\"name\":\"%s\",\"summary\":\"%s\",\"longDescription\":\"%s\",\"docsPath\":\"%s\"}",
-                 name_esc, sum_esc, long_esc, docs_esc);
+        char row[8192];
+        size_t row_len = 0;
+        if (appendf(row, sizeof(row), &row_len,
+                    "{\"name\":\"%s\",\"summary\":\"%s\",\"longDescription\":\"%s\",\"docsPath\":\"%s\"}",
+                    name_esc, sum_esc, long_esc, docs_esc) != 0) {
+            continue;
+        }
         (void)strvec_push(&lines, row);
     }
     closedir(root);
@@ -465,8 +525,18 @@ static void build_shell_command_help(const char *req, char *resp, size_t cap)
     }
 
     char pkg_path[PATH_MAX], docs_path[PATH_MAX];
-    snprintf(pkg_path, sizeof(pkg_path), "%s/cmd_%s/pkg.json", g_workspace, name);
-    snprintf(docs_path, sizeof(docs_path), "%s/cmd_%s/docs/%s.md", g_workspace, name, name);
+    if (!build_path_parts(pkg_path, sizeof(pkg_path),
+                          g_workspace, "/cmd_", name, "/pkg.json", "")) {
+        respond_error(resp, cap, "tools/call", "BAD_ARGUMENTS", "command path is too long");
+        return;
+    }
+    if (!build_path_parts(docs_path, sizeof(docs_path),
+                          g_workspace, "/cmd_", name, "/docs/", "") ||
+        !build_path_parts(docs_path, sizeof(docs_path),
+                          docs_path, name, ".md", "", "")) {
+        respond_error(resp, cap, "tools/call", "BAD_ARGUMENTS", "docs path is too long");
+        return;
+    }
 
     char pkg_name[SMALL_BUF], summary[SMALL_BUF], long_desc[2048], docs[16384];
     read_pkg_field(pkg_path, "name", pkg_name, sizeof(pkg_name));
@@ -722,7 +792,10 @@ static void rag_build_corpus(void)
     while ((de = readdir(root)) != NULL && g_rag_count < RAG_MAX_DOCS) {
         if (strncmp(de->d_name, "cmd_", 4) != 0) continue;
         char pkg_path[PATH_MAX];
-        snprintf(pkg_path, sizeof(pkg_path), "%s/%s/pkg.json", g_workspace, de->d_name);
+        if (!build_path_parts(pkg_path, sizeof(pkg_path),
+                              g_workspace, "/", de->d_name, "/pkg.json", "")) {
+            continue;
+        }
 
         char cmd_name[SMALL_BUF], summary[SMALL_BUF], long_desc[2048];
         read_pkg_field(pkg_path, "name",             cmd_name,  sizeof(cmd_name));
@@ -731,15 +804,25 @@ static void rag_build_corpus(void)
         if (cmd_name[0] == '\0') continue;
 
         char docs_path[PATH_MAX], docs[RAG_TEXT_MAX / 2];
-        snprintf(docs_path, sizeof(docs_path), "%s/cmd_%s/docs/%s.md",
-                 g_workspace, cmd_name, cmd_name);
+        if (!build_path_parts(docs_path, sizeof(docs_path),
+                              g_workspace, "/cmd_", cmd_name, "/docs/", "") ||
+            !build_path_parts(docs_path, sizeof(docs_path),
+                              docs_path, cmd_name, ".md", "", "")) {
+            continue;
+        }
         docs[0] = '\0';
         (void)read_file_to_buffer(docs_path, docs, sizeof(docs));
 
         rag_doc_t *doc = &g_rag_corpus[g_rag_count++];
-        snprintf(doc->command,     sizeof(doc->command),     "%s", cmd_name);
-        snprintf(doc->source_path, sizeof(doc->source_path), "cmd_%s/docs/%s.md",
-                 cmd_name, cmd_name);
+        if (!copy_string(doc->command, sizeof(doc->command), cmd_name)) {
+            g_rag_count--;
+            continue;
+        }
+        if (!build_path_parts(doc->source_path, sizeof(doc->source_path),
+                              "cmd_", cmd_name, "/docs/", cmd_name, ".md")) {
+            g_rag_count--;
+            continue;
+        }
         snprintf(doc->raw_text, sizeof(doc->raw_text), "%s\n%s\n%s\n%s",
                  cmd_name, summary, long_desc, docs);
         rag_normalize(doc->raw_text, doc->text, sizeof(doc->text));
@@ -932,6 +1015,164 @@ static void build_rag_command_recommend(const char *req, char *resp, size_t cap)
             "]},\"type\":\"tools/call\",\"protocol\":\"mcp-line-json\"}");
 }
 
+static bool post_agent_command_proxy(const char *query, char *resp, size_t cap)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return false;
+
+    struct timeval timeout;
+    timeout.tv_sec = 2;
+    timeout.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(3000);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(fd);
+        return false;
+    }
+
+    char query_esc[SMALL_BUF * 2];
+    json_escape(query, query_esc, sizeof(query_esc));
+
+    char body[SMALL_BUF * 2];
+    int body_len = snprintf(body, sizeof(body), "{\"query\":\"%s\"}", query_esc);
+    if (body_len < 0 || body_len >= (int)sizeof(body)) {
+        close(fd);
+        return false;
+    }
+
+    char reqbuf[SMALL_BUF * 4];
+    int req_len = snprintf(reqbuf, sizeof(reqbuf),
+                           "POST /agent/command HTTP/1.1\r\n"
+                           "Host: 127.0.0.1:3000\r\n"
+                           "Content-Type: application/json\r\n"
+                           "Content-Length: %d\r\n"
+                           "Connection: close\r\n\r\n"
+                           "%s",
+                           body_len, body);
+    if (req_len < 0 || req_len >= (int)sizeof(reqbuf)) {
+        close(fd);
+        return false;
+    }
+
+    ssize_t sent = send(fd, reqbuf, (size_t)req_len, 0);
+    if (sent != req_len) {
+        close(fd);
+        return false;
+    }
+
+    char raw[RESP_MAX];
+    size_t used = 0;
+    for (;;) {
+        ssize_t n = recv(fd, raw + used, sizeof(raw) - used - 1, 0);
+        if (n <= 0) break;
+        used += (size_t)n;
+        if (used + 1 >= sizeof(raw)) break;
+    }
+    close(fd);
+    raw[used] = '\0';
+
+    if (strncmp(raw, "HTTP/1.1 200", 12) != 0 && strncmp(raw, "HTTP/1.0 200", 12) != 0) {
+        return false;
+    }
+
+    char *body_start = strstr(raw, "\r\n\r\n");
+    if (!body_start) return false;
+    body_start += 4;
+
+    if (!copy_string(resp, cap, body_start)) return false;
+    return strstr(resp, "\"ok\":true") != NULL;
+}
+
+static void build_agent_command_plan_local(const char *query, char *resp, size_t cap)
+{
+    char terms[RAG_MAX_TERMS][64];
+    size_t nterms = rag_tokenize(query, terms, RAG_MAX_TERMS);
+    if (nterms == 0) {
+        respond_error(resp, cap, "tools/call", "BAD_ARGUMENTS",
+                      "query must include meaningful keywords");
+        return;
+    }
+
+    rag_build_corpus();
+
+    rag_hit_t hits[RAG_MAX_DOCS];
+    size_t nhits = rag_top_hits(terms, nterms, hits, 3);
+
+    char q_lower[SMALL_BUF];
+    size_t qlen = strlen(query);
+    if (qlen >= sizeof(q_lower)) qlen = sizeof(q_lower) - 1;
+    for (size_t i = 0; i < qlen; i++)
+        q_lower[i] = (char)tolower((unsigned char)query[i]);
+    q_lower[qlen] = '\0';
+
+    char command[SMALL_BUF * 2];
+    if (strstr(q_lower, "working directory") || strstr(q_lower, "where am i")) {
+        snprintf(command, sizeof(command), "pwd");
+    } else if (strstr(q_lower, "list") && strstr(q_lower, "file")) {
+        snprintf(command, sizeof(command), "ls");
+    } else if (strstr(q_lower, "show") && strstr(q_lower, "first")) {
+        snprintf(command, sizeof(command), "head");
+    } else if (nhits > 0) {
+        snprintf(command, sizeof(command), "%s --help", g_rag_corpus[hits[0].idx].command);
+    } else {
+        snprintf(command, sizeof(command), "help");
+    }
+
+    char rationale[SMALL_BUF * 4];
+    if (nhits > 0) {
+        snprintf(rationale, sizeof(rationale),
+                 "Grounded recommendation from %s Fallback path used because the Node/OpenAI agent service is unavailable.",
+                 g_rag_corpus[hits[0].idx].source_path);
+    } else {
+        snprintf(rationale, sizeof(rationale),
+                 "Fallback path used because the Node/OpenAI agent service is unavailable.");
+    }
+
+    char cmd_e[SMALL_BUF * 2], rat_e[SMALL_BUF * 8];
+    json_escape(command, cmd_e, sizeof(cmd_e));
+    json_escape(rationale, rat_e, sizeof(rat_e));
+
+    size_t len = 0;
+    appendf(resp, cap, &len,
+            "{\"ok\":true,\"tool\":\"agent.command.plan\",\"result\":{"
+            "\"command\":\"%s\",\"rationale\":\"%s\",\"citations\":[",
+            cmd_e, rat_e);
+    for (size_t i = 0; i < nhits; i++) {
+        char cit_e[512];
+        json_escape(g_rag_corpus[hits[i].idx].source_path, cit_e, sizeof(cit_e));
+        appendf(resp, cap, &len, "%s\"%s\"", i == 0 ? "" : ",", cit_e);
+    }
+    appendf(resp, cap, &len, "],\"trace\":["
+            "\"Tokenized the natural-language task.\","
+            "\"Retrieved relevant CoreShell docs from the local corpus.\","
+            "\"Selected the top grounded command recommendation.\"],"
+            "\"provider\":\"c-local-rag-fallback\","
+            "\"model\":\"c-local-rag-fallback\"},"
+            "\"type\":\"tools/call\",\"protocol\":\"mcp-line-json\"}");
+}
+
+static void build_agent_command_plan(const char *req, char *resp, size_t cap)
+{
+    char query[SMALL_BUF];
+    if (!extract_json_string(req, "query", query, sizeof(query)) || query[0] == '\0') {
+        respond_error(resp, cap, "tools/call", "BAD_ARGUMENTS", "query is required");
+        return;
+    }
+
+    if (post_agent_command_proxy(query, resp, cap)) {
+        return;
+    }
+
+    build_agent_command_plan_local(query, resp, cap);
+}
+
 static void handle_tools_call(const char *req, char *resp, size_t cap)
 {
     char tool[SMALL_BUF];
@@ -972,6 +1213,10 @@ static void handle_tools_call(const char *req, char *resp, size_t cap)
     }
     if (strcmp(tool, "rag.command.recommend") == 0) {
         build_rag_command_recommend(req, resp, cap);
+        return;
+    }
+    if (strcmp(tool, "agent.command.plan") == 0) {
+        build_agent_command_plan(req, resp, cap);
         return;
     }
 

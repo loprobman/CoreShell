@@ -93,6 +93,7 @@ static int test_tools_list(void)
     fails += expect_contains(resp, "\"filesystem.delete_older_than_days\"", "tools/list delete tool");
     fails += expect_contains(resp, "\"rag.docs.search\"", "tools/list rag search");
     fails += expect_contains(resp, "\"rag.command.recommend\"", "tools/list rag recommend");
+    fails += expect_contains(resp, "\"agent.command.plan\"", "tools/list agent plan");
     if (fails == 0) fprintf(stdout, "[PASS] tools/list\n");
     return fails;
 }
@@ -182,6 +183,25 @@ static int test_rag_command_recommend(void)
     return fails;
 }
 
+static int test_agent_command_plan(void)
+{
+    char resp[BUF_CAP];
+    if (send_request("{\"type\":\"tools/call\",\"tool\":\"agent.command.plan\","
+                     "\"arguments\":{\"query\":\"How do I print my working directory?\"}}",
+                     resp, sizeof(resp)) != 0) {
+        fprintf(stderr, "[FAIL] agent.command.plan request failed\n");
+        return 1;
+    }
+
+    int fails = 0;
+    fails += expect_contains(resp, "\"ok\":true", "agent.command.plan ok");
+    fails += expect_contains(resp, "\"tool\":\"agent.command.plan\"", "agent.command.plan tool tag");
+    fails += expect_contains(resp, "\"command\":\"pwd\"", "agent.command.plan pwd");
+    fails += expect_contains(resp, "\"provider\":", "agent.command.plan provider");
+    if (fails == 0) fprintf(stdout, "[PASS] agent.command.plan\n");
+    return fails;
+}
+
 static int wait_for_server_ready(void)
 {
     const int retries = 40;
@@ -241,6 +261,7 @@ int main(void)
     fails += test_unknown_method();
     fails += test_rag_docs_search();
     fails += test_rag_command_recommend();
+    fails += test_agent_command_plan();
 
     stop_server();
 

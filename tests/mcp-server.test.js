@@ -331,6 +331,48 @@ test("MCP tools/call recommends command grounded by retrieved docs", async () =>
   assert.ok(response.result.citations.some((entry) => /cmd_pwd\/docs\/pwd\.md$/.test(entry)));
 });
 
+test("MCP tools/call plans a command via agent fallback when OpenAI is not configured", async () => {
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.CORESH_OPENAI_MOCK_RESPONSE;
+
+  const response = await mcpRequest({
+    type: "tools/call",
+    tool: "agent.command.plan",
+    arguments: { query: "How do I print my working directory?" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.tool, "agent.command.plan");
+  assert.equal(response.result.command, "pwd");
+  assert.equal(response.result.provider, "local-rag-fallback");
+  assert.ok(Array.isArray(response.result.trace));
+  assert.ok(response.result.trace.length >= 1);
+});
+
+test("MCP tools/call plans a command via mocked OpenAI response", async () => {
+  process.env.OPENAI_API_KEY = "test-key";
+  process.env.CORESH_OPENAI_MOCK_RESPONSE = JSON.stringify({
+    command: "ls -la",
+    rationale: "Mock planner chose ls -la.",
+    trace: ["Looked up matching docs.", "Selected ls for listing files."],
+  });
+
+  const response = await mcpRequest({
+    type: "tools/call",
+    tool: "agent.command.plan",
+    arguments: { query: "List the files in this directory" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.tool, "agent.command.plan");
+  assert.equal(response.result.command, "ls -la");
+  assert.equal(response.result.provider, "openai-mock");
+  assert.ok(Array.isArray(response.result.citations));
+
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.CORESH_OPENAI_MOCK_RESPONSE;
+});
+
 test("MCP logs every request/response call", async () => {
   await mcpRequest({
     type: "tools/call",

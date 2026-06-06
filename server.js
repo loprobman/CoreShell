@@ -1,11 +1,14 @@
 const express = require("express");
 const fs = require("fs");
+const http = require("http");
+const https = require("https");
 const net = require("net");
 const path = require("path");
 
 const app = express();
 const PORT = 3000;
 const MCP_PORT = 9000;
+const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const ARTIFACTS_DIR = path.join(__dirname, "artifacts");
 const MCP_CALL_LOG = path.join(ARTIFACTS_DIR, "mcp_calls.log");
 const STOP_WORDS = new Set([
@@ -38,6 +41,8 @@ const STOP_WORDS = new Set([
 if (!fs.existsSync(ARTIFACTS_DIR)) {
   fs.mkdirSync(ARTIFACTS_DIR, { recursive: true });
 }
+
+app.use(express.json());
 
 // Serve package files from artifacts directory
 app.use("/downloads", express.static(ARTIFACTS_DIR));
@@ -292,6 +297,38 @@ function buildToolCatalog() {
         additionalProperties: false,
       },
     },
+    {
+      name: "agent.command.plan",
+      description:
+        "Use an OpenAI-backed agent to suggest one CoreShell command with grounding and execution notes",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+        },
+        required: ["query"],
+        additionalProperties: false,
+      },
+      outputSchema: {
+        type: "object",
+        properties: {
+          command: { type: "string" },
+          rationale: { type: "string" },
+          citations: {
+            type: "array",
+            items: { type: "string" },
+          },
+          trace: {
+            type: "array",
+            items: { type: "string" },
+          },
+          provider: { type: "string" },
+          model: { type: "string" },
+        },
+        required: ["command", "rationale", "citations", "trace", "provider", "model"],
+        additionalProperties: false,
+      },
+    },
   ];
 }
 
@@ -470,6 +507,198 @@ function ragRecommendCommand(args) {
       citations: retrieval.result.map((entry) => entry.sourcePath),
     },
   };
+}
+
+function buildAgentSystemPrompt() {
+  return [
+    "You are the CoreShell command planner.",
+    "Return exactly one JSON object and no extra text.",
+    "Choose one safe CoreShell command suggestion for the user's task.",
+    "Prefer commands already present in the CoreShell docs corpus.",
+    'JSON schema: {"command":string,"rationale":string,"trace":string[]}.',
+    "trace should be a short list of reasoning steps, not hidden chain-of-thought.",
+    "Do not recommend destructive commands unless the user explicitly asks for them.",
+  ].join(" ");
+}
+
+function buildAgentFallback(query) {
+  const recommendation = ragRecommendCommand({ query });
+  const citations = recommendation.ok ? recommendation.result.citations : [];
+  const command = recommendation.ok ? recommendation.result.command : "help";
+  const rationale = recommendation.ok
+    ? `${recommendation.result.rationale} Fallback path used because OpenAI is not configured.`
+    : "Fallback path used because OpenAI is not configured.";
+  return {
+    command,
+    rationale,
+    citations,
+    trace: [
+      "Tokenized the natural-language task.",
+      "Retrieved relevant CoreShell docs from the local corpus.",
+      "Selected the top grounded command recommendation.",
+    ],
+    provider: "local-rag-fallback",
+    model: "local-rag-fallback",
+  };
+}
+
+function parseAgentJsonResponse(text) {
+  const trimmed = String(text || "").trim();
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace < 0 || lastBrace < firstBrace) {
+    throw new Error("Agent response did not contain JSON");
+  }
+  return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
+}
+
+function postJson(urlString, payload, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(payload);
+    const url = new URL(urlString);
+    const transport = url.protocol === "https:" ? https : http;
+    const request = transport.request(
+      {
+        method: "POST",
+        hostname: url.hostname,
+        port: url.port || (url.protocol === "https:" ? 443 : 80),
+        path: `${url.pathname}${url.search}`,
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+          ...headers,
+        },
+      },
+      (response) => {
+        let raw = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          raw += chunk;
+        });
+        response.on("end", () => {
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            reject(new Error(`HTTP ${response.statusCode}: ${raw}`));
+            return;
+          }
+          try {
+            resolve(raw.length ? JSON.parse(raw) : null);
+          } catch (error) {
+            reject(error);
+          }
+        });
+      },
+    );
+
+    request.on("error", reject);
+    request.write(body);
+    request.end();
+  });
+}
+
+async function callOpenAiAgent(query, citations) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return buildAgentFallback(query);
+  }
+
+  if (process.env.CORESH_OPENAI_MOCK_RESPONSE) {
+    const parsed = parseAgentJsonResponse(process.env.CORESH_OPENAI_MOCK_RESPONSE);
+    return {
+      command: String(parsed.command || "help"),
+      rationale: String(parsed.rationale || "Mocked OpenAI response."),
+      citations,
+      trace: Array.isArray(parsed.trace) ? parsed.trace.map((entry) => String(entry)) : [],
+      provider: "openai-mock",
+      model: process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL,
+    };
+  }
+
+  const payload = {
+    model: DEFAULT_OPENAI_MODEL,
+    input: [
+      {
+        role: "system",
+        content: [{ type: "input_text", text: buildAgentSystemPrompt() }],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: [
+              `User query: ${query}`,
+              `Grounding citations: ${citations.join(", ") || "none"}`,
+            ].join("\n"),
+          },
+        ],
+      },
+    ],
+  };
+
+  const response = await postJson("https://api.openai.com/v1/responses", payload, {
+    Authorization: `Bearer ${apiKey}`,
+  });
+
+  const outputText = Array.isArray(response.output)
+    ? response.output
+        .flatMap((item) => Array.isArray(item.content) ? item.content : [])
+        .filter((item) => item && typeof item.text === "string")
+        .map((item) => item.text)
+        .join("\n")
+    : "";
+  const parsed = parseAgentJsonResponse(outputText);
+  return {
+    command: String(parsed.command || "help"),
+    rationale: String(parsed.rationale || "OpenAI agent response."),
+    citations,
+    trace: Array.isArray(parsed.trace) ? parsed.trace.map((entry) => String(entry)) : [],
+    provider: "openai",
+    model: response.model || DEFAULT_OPENAI_MODEL,
+  };
+}
+
+async function agentPlanCommand(args) {
+  const query = args && typeof args.query === "string" ? args.query.trim() : "";
+  if (!query) {
+    return {
+      ok: false,
+      tool: "agent.command.plan",
+      error: {
+        code: "BAD_ARGUMENTS",
+        message: "query is required",
+      },
+    };
+  }
+
+  const retrieval = ragSearchDocs({ query, topK: 3 });
+  if (!retrieval.ok) {
+    return {
+      ok: false,
+      tool: "agent.command.plan",
+      error: retrieval.error,
+    };
+  }
+
+  try {
+    const result = await callOpenAiAgent(
+      query,
+      retrieval.result.map((entry) => entry.sourcePath),
+    );
+    return {
+      ok: true,
+      tool: "agent.command.plan",
+      result,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      tool: "agent.command.plan",
+      error: {
+        code: "AGENT_PROVIDER_ERROR",
+        message: error.message,
+      },
+    };
+  }
 }
 
 function resolveWorkspacePath(rawPath) {
@@ -985,7 +1214,7 @@ function runShellCommand(name, args) {
   };
 }
 
-function buildToolResponse(toolName, args) {
+async function buildToolResponse(toolName, args) {
   if (toolName === "registry.packages.list") {
     return {
       ok: true,
@@ -1047,6 +1276,10 @@ function buildToolResponse(toolName, args) {
     return ragRecommendCommand(args);
   }
 
+  if (toolName === "agent.command.plan") {
+    return agentPlanCommand(args);
+  }
+
   return {
     ok: false,
     tool: toolName || null,
@@ -1057,6 +1290,11 @@ function buildToolResponse(toolName, args) {
     },
   };
 }
+
+app.post("/agent/command", async (req, res) => {
+  const response = await agentPlanCommand(req.body || {});
+  res.status(response.ok ? 200 : 400).json(response);
+});
 
 function createMcpServer() {
   return net.createServer((socket) => {
@@ -1077,7 +1315,7 @@ function createMcpServer() {
       socket.end(`${JSON.stringify(payload)}\n`);
     };
 
-    socket.on("data", (chunk) => {
+    socket.on("data", async (chunk) => {
       buffer += chunk;
       let newlineIndex = buffer.indexOf("\n");
       while (newlineIndex >= 0 && !replied) {
@@ -1116,7 +1354,7 @@ function createMcpServer() {
           const tool = String(request.tool || request.name || "").trim();
           const args = request.arguments || request.params || request.args || {};
           reply({
-            ...buildToolResponse(tool, args),
+            ...(await buildToolResponse(tool, args)),
             type,
             protocol: "mcp-line-json",
           }, request);
@@ -1185,6 +1423,7 @@ module.exports = {
   MCP_PORT,
   PORT,
   packages,
+  agentPlanCommand,
   ragSearchDocs,
   ragRecommendCommand,
 };
