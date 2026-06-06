@@ -53,10 +53,81 @@ The server listens on port `3000` and exposes:
 npm test
 ```
 
+## MCP-Compatible Service Layer
+
+CoreShell provides two MCP-compatible servers:
+
+- Native C server (slide-literal path): `./mcp_server` on `127.0.0.1:9000`
+- Node compatibility bridge (used by Node tests): `server.js` (`createMcpServer()`)
+
+Both use line-based JSON with `tools/list` and `tools/call`.
+
+Build and launch the native C server with:
+
+```bash
+make mcp_server
+./mcp_server
+```
+
+This runs the native C MCP server on port `9000`.
+
+### Protocol
+
+- One JSON object per line
+- Requests use `type: "tools/list"` or `type: "tools/call"`
+- Responses are JSON objects with a stable `ok` field and either `tools` or `result`
+
+### Tools
+
+| Tool | Description |
+|---|---|
+| `registry.packages.list` | list all known packages |
+| `registry.package.lookup` | look up one package by `name` |
+| `shell.commands.list` | list CoreShell commands and their docs paths |
+| `shell.command.help` | return the help metadata for one command |
+| `shell.command.run` | run allowlisted shell commands (native C: `echo`, `pwd`, `help`; Node bridge additionally supports `ls`, `cat`, `stat`, `head`) |
+| `filesystem.delete_older_than_days` | delete files older than `days` under a workspace path (supports `dryRun`) |
+| `rag.docs.search` | retrieve top command-doc matches for a natural-language query |
+| `rag.command.recommend` | return one grounded command recommendation with citation paths |
+
+### Example
+
+```bash
+printf '{"type":"tools/list"}\n' | nc 127.0.0.1 9000
+
+printf '{"type":"tools/call","tool":"registry.package.lookup","arguments":{"name":"echo"}}\n' | nc 127.0.0.1 9000
+
+printf '{"type":"tools/call","tool":"filesystem.delete_older_than_days","arguments":{"path":"artifacts","days":30,"dryRun":true}}\n' | nc 127.0.0.1 9000
+
+printf '{"type":"tools/call","tool":"rag.docs.search","arguments":{"query":"print working directory","topK":3}}\n' | nc 127.0.0.1 9000
+
+printf '{"type":"tools/call","tool":"rag.command.recommend","arguments":{"query":"How do I print my working directory?"}}\n' | nc 127.0.0.1 9000
+```
+
+### Node tests
+
+```bash
+npm test
+```
+
+The Node test suite now covers both the HTTP registry and the MCP-compatible
+socket interface, including the shell command catalog, help bridge, and the
+read-only command runner.
+
+All MCP request/response events are logged to `artifacts/mcp_calls.log` as
+JSON lines.
+
+## Agent Demo (Slide Assignment)
+
+- Example agent script: `agent_mcp_example.py`
+- Demo prompt set: `mcp_demo_queries.md`
+- Captured run transcript: `mcp_demo_transcript.md`
+
 ## Testing
 
 ```bash
 make test                   # Build CoreShell + test runner, then execute all test cases
+make test-mcp-c             # Build and run native C MCP server protocol tests
 ./test_runner               # Run already-built test binary directly
 ```
 
@@ -71,7 +142,7 @@ captures stdout/stderr via pipes.  On completion it produces:
 
 Both files are regenerated on every run and removed by `make clean`.
 
-### Test suites (164 test cases)
+### Test suites (170 test cases)
 
 | Suite | Cases | What is tested |
 |---|---|---|
@@ -91,9 +162,10 @@ Both files are regenerated on every run and removed by `make clean`.
 | `test_mkdir` | 3 | create, existing dir error, `--help` |
 | `test_rmdir` | 3 | remove empty, error, `--help` |
 | `test_touch` | 3 | create, update timestamp, `--help` |
-| `test_cmd_spec_metadata` | 19 | all 19 commands have name, summary, long_help, run, print_usage set |
-| `test_pkg_json` | 17 | all 17 `pkg.json` files contain all 6 required fields (incl. `files`) |
-| `test_docs_md` | 17 | all 17 `docs/<name>.md` files contain `## Usage` and `## Options` |
+| `test_rpc` | 6 | help/help-json, validation, timeout path, local line-protocol success, stable json keys |
+| `test_cmd_spec_metadata` | 20 | all 20 commands have name, summary, long_help, run, print_usage set |
+| `test_pkg_json` | 18 | all 18 `pkg.json` files contain all 6 required fields (incl. `files`) |
+| `test_docs_md` | 18 | all 18 `docs/<name>.md` files contain `## Usage` and `## Options` |
 | `test_multicall_dispatch` | 6 | Mode 2 (argv[1]), unknown command error, Mode 1 (symlink) |
 | `test_pwd_help_format` | 2 | `--logical` and `--physical` appear in help (format bug regression) |
 | `test_json_flags` | 6 | `--help-json` emits schema with `name`/`options`; `--json` emits result key |
@@ -107,6 +179,53 @@ Both files are regenerated on every run and removed by `make clean`.
 make debug
 gdb ./CoreShell
 ```
+
+## Week 8 Baseline: Socket Client Command
+
+CoreShell includes a Week 8 baseline socket-client built-in named `rpc`.
+
+### Goals covered
+
+- Client API pattern: `socket() -> connect() -> send()/recv() -> close()`
+- Explicit timeout and retry controls to avoid hanging shell sessions
+- Line-based minimal protocol (`request\\n` -> `response\\n`)
+- Input validation and bounded reads/writes
+- Help/registry integration consistent with command anatomy
+- Optional `--json` output with stable keys
+
+### Usage
+
+```bash
+rpc [-h] [--help-json] [--json] [-H HOST] [-p PORT] [-t SECONDS] [-r RETRIES] <message>
+```
+
+### Examples
+
+```bash
+# Simple request to local service
+rpc "ping"
+
+# Custom host/port with timeout and retries
+rpc -H 127.0.0.1 -p 5555 -t 2 -r 2 "health"
+
+# Structured output
+rpc --json -H 127.0.0.1 -p 5555 "status"
+```
+
+### JSON output schema (stable)
+
+```json
+{
+  "ok": true,
+  "host": "127.0.0.1",
+  "port": 5555,
+  "attempts": 1,
+  "response": "ACK:ping",
+  "error": null
+}
+```
+
+On errors, `ok` is `false`, `response` is `null`, and `error` contains a readable error string.
 
 ## Threading Architecture (Week Five)
 

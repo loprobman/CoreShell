@@ -1,0 +1,8 @@
+{
+  "name": "rpc",
+  "version": "1.0.0",
+  "description": "send a line request to a TCP service",
+  "long_description": "Connect to a TCP host/port, send a single line request, and print the line-based response. Supports timeout, retries, and optional JSON output.",
+  "files": ["bin/rpc"],
+  "docs": ["docs/rpc.md"]
+}

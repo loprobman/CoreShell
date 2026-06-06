@@ -20,6 +20,7 @@
 #include "cmd_pkg.h"
 #include "cmd_jobs.h"
 #include "cmd_kill.h"
+#include "cmd_rpc.h"
 
 /* ── JSON help output ──────────────────────────────────────────────────── */
 
@@ -212,4 +213,5 @@ void register_all_builtin_commands(void)
     register_pkg_command();
     register_jobs_command();
     register_kill_command();
+    register_rpc_command();
 }

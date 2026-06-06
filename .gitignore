@@ -34,11 +34,14 @@
 *.app
 CoreShell
 coresh_llm
+mcp_server
 pkg
 bin/
 node_modules/
 artifacts/*.tar.gz
+artifacts/mcp_calls.log
 test_runner
+tests/mcp_server_c_test
 *.i*86
 *.x86_64
 *.hex
