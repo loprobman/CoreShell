@@ -77,6 +77,14 @@ This runs the native C MCP server on port `9000`.
 - Requests use `type: "tools/list"` or `type: "tools/call"`
 - Responses are JSON objects with a stable `ok` field and either `tools` or `result`
 
+Compatibility mode (for classroom MCP examples) is also supported by the native C server:
+
+- `method: "initialize"`
+- `method: "list_tools"`
+- `method: "call_tool"` with tools `list_files`, `get_time`, `delete_older_than_days`
+
+In compatibility mode, responses echo request `id` and use a notebook-style envelope (`type: "response"`).
+
 ### Tools
 
 | Tool | Description |
@@ -120,8 +128,55 @@ JSON lines.
 ## Agent Demo (Slide Assignment)
 
 - Example agent script: `agent_mcp_example.py`
+- Notebook-style legacy MCP client example: `legacy_mcp_client.py`
 - Demo prompt set: `mcp_demo_queries.md`
 - Captured run transcript: `mcp_demo_transcript.md`
+
+Run the compatibility client with:
+
+```bash
+python3 legacy_mcp_client.py --path artifacts --days 30
+```
+
+Expected output shape (abbreviated):
+
+```text
+=== initialize ===
+response:
+{
+  "id": 1,
+  "type": "response",
+  "result": {
+    "server": "CoreShell MCP Server",
+    "version": "1.0"
+  }
+}
+
+=== list_tools ===
+response:
+{
+  "id": 2,
+  "type": "response",
+  "result": {
+    "tools": [
+      {"name": "list_files", ...},
+      {"name": "get_time", ...},
+      {"name": "delete_older_than_days", ...}
+    ]
+  }
+}
+
+=== call_tool:get_time ===
+response:
+{
+  "id": 4,
+  "type": "response",
+  "result": {
+    "tool": "get_time",
+    "time": "YYYY-MM-DD HH:MM:SS"
+  }
+}
+```
 
 ## Testing
 

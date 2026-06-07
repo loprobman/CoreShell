@@ -98,6 +98,71 @@ static int test_tools_list(void)
     return fails;
 }
 
+static int test_legacy_initialize(void)
+{
+    char resp[BUF_CAP];
+    if (send_request("{\"id\":1,\"method\":\"initialize\",\"params\":{}}", resp, sizeof(resp)) != 0) {
+        fprintf(stderr, "[FAIL] legacy initialize request failed\n");
+        return 1;
+    }
+
+    int fails = 0;
+    fails += expect_contains(resp, "\"id\":1", "legacy initialize id echo");
+    fails += expect_contains(resp, "\"type\":\"response\"", "legacy initialize type");
+    fails += expect_contains(resp, "\"server\":\"CoreShell MCP Server\"", "legacy initialize server");
+    if (fails == 0) fprintf(stdout, "[PASS] legacy initialize\n");
+    return fails;
+}
+
+static int test_legacy_list_tools(void)
+{
+    char resp[BUF_CAP];
+    if (send_request("{\"id\":2,\"method\":\"list_tools\",\"params\":{}}", resp, sizeof(resp)) != 0) {
+        fprintf(stderr, "[FAIL] legacy list_tools request failed\n");
+        return 1;
+    }
+
+    int fails = 0;
+    fails += expect_contains(resp, "\"id\":2", "legacy list_tools id echo");
+    fails += expect_contains(resp, "\"list_files\"", "legacy list_tools list_files");
+    fails += expect_contains(resp, "\"get_time\"", "legacy list_tools get_time");
+    fails += expect_contains(resp, "\"delete_older_than_days\"", "legacy list_tools delete tool");
+    if (fails == 0) fprintf(stdout, "[PASS] legacy list_tools\n");
+    return fails;
+}
+
+static int test_legacy_call_tool_get_time(void)
+{
+    char resp[BUF_CAP];
+    if (send_request("{\"id\":3,\"method\":\"call_tool\",\"params\":{\"tool\":\"get_time\",\"args\":{}}}", resp, sizeof(resp)) != 0) {
+        fprintf(stderr, "[FAIL] legacy call_tool get_time request failed\n");
+        return 1;
+    }
+
+    int fails = 0;
+    fails += expect_contains(resp, "\"id\":3", "legacy call_tool get_time id echo");
+    fails += expect_contains(resp, "\"tool\":\"get_time\"", "legacy call_tool get_time tool");
+    fails += expect_contains(resp, "\"time\":", "legacy call_tool get_time field");
+    if (fails == 0) fprintf(stdout, "[PASS] legacy call_tool get_time\n");
+    return fails;
+}
+
+static int test_legacy_call_tool_list_files(void)
+{
+    char resp[BUF_CAP];
+    if (send_request("{\"id\":4,\"method\":\"call_tool\",\"params\":{\"tool\":\"list_files\",\"args\":{\"path\":\".\"}}}", resp, sizeof(resp)) != 0) {
+        fprintf(stderr, "[FAIL] legacy call_tool list_files request failed\n");
+        return 1;
+    }
+
+    int fails = 0;
+    fails += expect_contains(resp, "\"id\":4", "legacy call_tool list_files id echo");
+    fails += expect_contains(resp, "\"tool\":\"list_files\"", "legacy call_tool list_files tool");
+    fails += expect_contains(resp, "\"output\":", "legacy call_tool list_files output");
+    if (fails == 0) fprintf(stdout, "[PASS] legacy call_tool list_files\n");
+    return fails;
+}
+
 static int test_lookup_echo(void)
 {
     char resp[BUF_CAP];
@@ -255,6 +320,10 @@ int main(void)
     }
 
     int fails = 0;
+    fails += test_legacy_initialize();
+    fails += test_legacy_list_tools();
+    fails += test_legacy_call_tool_get_time();
+    fails += test_legacy_call_tool_list_files();
     fails += test_tools_list();
     fails += test_lookup_echo();
     fails += test_delete_dry_run();

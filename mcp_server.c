@@ -241,6 +241,59 @@ static bool extract_json_bool(const char *json, const char *key, bool *out)
     return false;
 }
 
+static void extract_json_id_raw(const char *json, char *out, size_t outcap)
+{
+    const char *p = strstr(json, "\"id\"");
+    if (!p) {
+        snprintf(out, outcap, "null");
+        return;
+    }
+
+    p = strchr(p, ':');
+    if (!p) {
+        snprintf(out, outcap, "null");
+        return;
+    }
+    p++;
+    while (*p && isspace((unsigned char)*p)) p++;
+
+    if (*p == '"') {
+        size_t o = 0;
+        if (o + 1 < outcap) out[o++] = '"';
+        p++;
+        while (*p && *p != '"' && o + 2 < outcap) {
+            if (*p == '\\' && p[1] != '\0' && o + 3 < outcap) {
+                out[o++] = *p++;
+            }
+            out[o++] = *p++;
+        }
+        if (o + 2 < outcap) {
+            out[o++] = '"';
+            out[o] = '\0';
+            return;
+        }
+    } else {
+        size_t o = 0;
+        while (*p && *p != ',' && *p != '}' && !isspace((unsigned char)*p) && o + 1 < outcap) {
+            out[o++] = *p++;
+        }
+        out[o] = '\0';
+        if (o > 0) return;
+    }
+
+    snprintf(out, outcap, "null");
+}
+
+static bool has_method(const char *req, const char *method)
+{
+    char compact[96];
+    char spaced[96];
+
+    snprintf(compact, sizeof(compact), "\"method\":\"%s\"", method);
+    snprintf(spaced, sizeof(spaced), "\"method\": \"%s\"", method);
+    return strstr(req, compact) || strstr(req, spaced);
+}
+
 static void extract_args_array(const char *json, strvec_t *args)
 {
     const char *p = strstr(json, "\"args\"");
@@ -1173,6 +1226,216 @@ static void build_agent_command_plan(const char *req, char *resp, size_t cap)
     build_agent_command_plan_local(query, resp, cap);
 }
 
+static void build_legacy_initialize(const char *req, char *resp, size_t cap)
+{
+    char id_raw[64];
+    extract_json_id_raw(req, id_raw, sizeof(id_raw));
+
+    snprintf(resp, cap,
+             "{\"id\":%s,\"type\":\"response\",\"result\":{\"server\":\"CoreShell MCP Server\",\"version\":\"1.0\"}}",
+             id_raw);
+}
+
+static void build_legacy_list_tools(const char *req, char *resp, size_t cap)
+{
+    char id_raw[64];
+    extract_json_id_raw(req, id_raw, sizeof(id_raw));
+
+    snprintf(resp, cap,
+             "{\"id\":%s,\"type\":\"response\",\"result\":{\"tools\":["
+             "{\"name\":\"list_files\",\"desc\":\"List files in a directory\",\"schema\":{\"path\":\"string\"}},"
+             "{\"name\":\"get_time\",\"desc\":\"Get server time\",\"schema\":{}},"
+             "{\"name\":\"delete_older_than_days\",\"desc\":\"Delete files older than N days\",\"schema\":{\"path\":\"string\",\"days\":\"integer\",\"dryRun\":\"boolean\"}}"
+             "]}}",
+             id_raw);
+}
+
+static void build_legacy_tool_error(const char *req, char *resp, size_t cap, const char *msg)
+{
+    char id_raw[64];
+    char esc[SMALL_BUF * 2];
+    extract_json_id_raw(req, id_raw, sizeof(id_raw));
+    json_escape(msg, esc, sizeof(esc));
+
+    snprintf(resp, cap,
+             "{\"id\":%s,\"type\":\"response\",\"result\":{\"error\":\"%s\"}}",
+             id_raw, esc);
+}
+
+static void build_legacy_list_files(const char *req, char *resp, size_t cap)
+{
+    char id_raw[64];
+    char raw_path[PATH_MAX];
+    char resolved[PATH_MAX];
+    char output[16384];
+    size_t out_len = 0;
+
+    extract_json_id_raw(req, id_raw, sizeof(id_raw));
+    if (!extract_json_string(req, "path", raw_path, sizeof(raw_path))) {
+        snprintf(raw_path, sizeof(raw_path), ".");
+    }
+
+    if (!resolve_workspace_path(raw_path, resolved, sizeof(resolved))) {
+        build_legacy_tool_error(req, resp, cap, "path must be inside workspace");
+        return;
+    }
+
+    DIR *dir = opendir(resolved);
+    if (!dir) {
+        build_legacy_tool_error(req, resp, cap, "list_files failed");
+        return;
+    }
+
+    strvec_t entries;
+    strvec_init(&entries);
+
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+        (void)strvec_push(&entries, de->d_name);
+    }
+    closedir(dir);
+
+    qsort(entries.items, entries.count, sizeof(char *), cmd_name_cmp);
+
+    output[0] = '\0';
+    for (size_t i = 0; i < entries.count; i++) {
+        appendf(output, sizeof(output), &out_len, "%s%s", i == 0 ? "" : "\\n", entries.items[i]);
+    }
+
+    char out_esc[32768];
+    json_escape(output, out_esc, sizeof(out_esc));
+
+    snprintf(resp, cap,
+             "{\"id\":%s,\"type\":\"response\",\"result\":{\"tool\":\"list_files\",\"output\":\"%s\"}}",
+             id_raw, out_esc);
+
+    strvec_free(&entries);
+}
+
+static void build_legacy_get_time(const char *req, char *resp, size_t cap)
+{
+    char id_raw[64];
+    char buf[64];
+    time_t t = time(NULL);
+    struct tm tm_now;
+
+    extract_json_id_raw(req, id_raw, sizeof(id_raw));
+    localtime_r(&t, &tm_now);
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_now);
+
+    snprintf(resp, cap,
+             "{\"id\":%s,\"type\":\"response\",\"result\":{\"tool\":\"get_time\",\"time\":\"%s\"}}",
+             id_raw, buf);
+}
+
+static void build_legacy_delete_older_than_days(const char *req, char *resp, size_t cap)
+{
+    char id_raw[64];
+    char raw_path[PATH_MAX];
+    char resolved[PATH_MAX];
+    char output[16384];
+    size_t output_len = 0;
+    double days = 0.0;
+    bool dry_run = true;
+
+    extract_json_id_raw(req, id_raw, sizeof(id_raw));
+
+    if (!extract_json_string(req, "path", raw_path, sizeof(raw_path))) {
+        build_legacy_tool_error(req, resp, cap, "path is required");
+        return;
+    }
+    if (!extract_json_number(req, "days", &days) || days <= 0) {
+        build_legacy_tool_error(req, resp, cap, "invalid days value");
+        return;
+    }
+    if (!extract_json_bool(req, "dryRun", &dry_run)) {
+        (void)extract_json_bool(req, "dry_run", &dry_run);
+    }
+
+    if (!resolve_workspace_path(raw_path, resolved, sizeof(resolved))) {
+        build_legacy_tool_error(req, resp, cap, "path must be inside workspace");
+        return;
+    }
+
+    struct stat st;
+    if (stat(resolved, &st) != 0) {
+        build_legacy_tool_error(req, resp, cap, "stat failed");
+        return;
+    }
+
+    strvec_t matched;
+    strvec_init(&matched);
+
+    double now_ms = (double)time(NULL) * 1000.0;
+    double threshold_ms = now_ms - days * 24.0 * 60.0 * 60.0 * 1000.0;
+
+    if (S_ISREG(st.st_mode)) {
+        double mtime_ms = (double)st.st_mtim.tv_sec * 1000.0 + (double)st.st_mtim.tv_nsec / 1000000.0;
+        if (mtime_ms < threshold_ms) (void)strvec_push(&matched, resolved);
+    } else if (S_ISDIR(st.st_mode)) {
+        scan_old_files(resolved, threshold_ms, &matched);
+    } else {
+        build_legacy_tool_error(req, resp, cap, "path must be file or directory");
+        strvec_free(&matched);
+        return;
+    }
+
+    size_t deleted = 0;
+    if (!dry_run) {
+        for (size_t i = 0; i < matched.count; i++) {
+            if (unlink(matched.items[i]) == 0) deleted += 1;
+        }
+    }
+
+    output[0] = '\0';
+    for (size_t i = 0; i < matched.count; i++) {
+        char rel[PATH_MAX];
+        const char *m = matched.items[i];
+        if (strncmp(m, g_workspace, strlen(g_workspace)) == 0) {
+            snprintf(rel, sizeof(rel), "%s", m + strlen(g_workspace) + (m[strlen(g_workspace)] == '/' ? 1 : 0));
+        } else {
+            snprintf(rel, sizeof(rel), "%s", m);
+        }
+        appendf(output, sizeof(output), &output_len, "%s%s", i == 0 ? "" : "\\n", rel);
+    }
+
+    char out_esc[32768];
+    char path_esc[PATH_MAX * 2];
+    json_escape(output, out_esc, sizeof(out_esc));
+    json_escape(raw_path, path_esc, sizeof(path_esc));
+
+    snprintf(resp, cap,
+             "{\"id\":%s,\"type\":\"response\",\"result\":{\"tool\":\"delete_older_than_days\",\"path\":\"%s\",\"days\":%.0f,\"dryRun\":%s,\"matchedCount\":%zu,\"deletedCount\":%zu,\"output\":\"%s\"}}",
+             id_raw, path_esc, days, dry_run ? "true" : "false", matched.count, deleted, out_esc);
+
+    strvec_free(&matched);
+}
+
+static void handle_legacy_call_tool(const char *req, char *resp, size_t cap)
+{
+    char tool[SMALL_BUF];
+    if (!extract_json_string(req, "tool", tool, sizeof(tool))) {
+        build_legacy_tool_error(req, resp, cap, "tool is required");
+        return;
+    }
+
+    if (strcmp(tool, "list_files") == 0) {
+        build_legacy_list_files(req, resp, cap);
+        return;
+    }
+    if (strcmp(tool, "get_time") == 0) {
+        build_legacy_get_time(req, resp, cap);
+        return;
+    }
+    if (strcmp(tool, "delete_older_than_days") == 0) {
+        build_legacy_delete_older_than_days(req, resp, cap);
+        return;
+    }
+
+    build_legacy_tool_error(req, resp, cap, "unknown tool");
+}
+
 static void handle_tools_call(const char *req, char *resp, size_t cap)
 {
     char tool[SMALL_BUF];
@@ -1225,6 +1488,19 @@ static void handle_tools_call(const char *req, char *resp, size_t cap)
 
 static void handle_request(const char *req, char *resp, size_t cap)
 {
+    if (has_method(req, "initialize")) {
+        build_legacy_initialize(req, resp, cap);
+        return;
+    }
+    if (has_method(req, "list_tools")) {
+        build_legacy_list_tools(req, resp, cap);
+        return;
+    }
+    if (has_method(req, "call_tool")) {
+        handle_legacy_call_tool(req, resp, cap);
+        return;
+    }
+
     if (strstr(req, "\"type\":\"tools/list\"") || strstr(req, "\"method\":\"tools/list\"")) {
         build_tools_list_response(resp, cap);
         return;
