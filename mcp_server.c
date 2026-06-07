@@ -14,6 +14,8 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+#include <signal.h>
+#include "jsmn.h"
 
 #define MCP_PORT 9000
 #define BACKLOG 16
@@ -39,16 +41,44 @@ typedef struct {
     double score;
 } rag_hit_t;
 
+typedef struct strvec_s strvec_t;
+
+typedef enum {
+    REQUEST_UNKNOWN = 0,
+    REQUEST_LEGACY_INITIALIZE,
+    REQUEST_LEGACY_LIST_TOOLS,
+    REQUEST_LEGACY_CALL_TOOL,
+    REQUEST_NATIVE_TOOLS_LIST,
+    REQUEST_NATIVE_TOOLS_CALL
+} request_kind_t;
+
 static char      g_workspace[PATH_MAX];
 static rag_doc_t g_rag_corpus[RAG_MAX_DOCS];
 static size_t    g_rag_count = 0;
 static bool      g_rag_ready = false;
 
-typedef struct {
+struct strvec_s {
     char **items;
     size_t count;
     size_t cap;
-} strvec_t;
+};
+
+typedef struct {
+    request_kind_t kind;
+    char id_raw[64];
+    char tool[SMALL_BUF];
+    char name[SMALL_BUF];
+    char query[SMALL_BUF];
+    char path[PATH_MAX];
+    double days;
+    double top_k;
+    bool has_path;
+    bool has_days;
+    bool has_top_k;
+    bool dry_run;
+    bool has_dry_run;
+    strvec_t args;
+} request_ctx_t;
 
 static void strvec_init(strvec_t *v)
 {
@@ -241,59 +271,6 @@ static bool extract_json_bool(const char *json, const char *key, bool *out)
     return false;
 }
 
-static void extract_json_id_raw(const char *json, char *out, size_t outcap)
-{
-    const char *p = strstr(json, "\"id\"");
-    if (!p) {
-        snprintf(out, outcap, "null");
-        return;
-    }
-
-    p = strchr(p, ':');
-    if (!p) {
-        snprintf(out, outcap, "null");
-        return;
-    }
-    p++;
-    while (*p && isspace((unsigned char)*p)) p++;
-
-    if (*p == '"') {
-        size_t o = 0;
-        if (o + 1 < outcap) out[o++] = '"';
-        p++;
-        while (*p && *p != '"' && o + 2 < outcap) {
-            if (*p == '\\' && p[1] != '\0' && o + 3 < outcap) {
-                out[o++] = *p++;
-            }
-            out[o++] = *p++;
-        }
-        if (o + 2 < outcap) {
-            out[o++] = '"';
-            out[o] = '\0';
-            return;
-        }
-    } else {
-        size_t o = 0;
-        while (*p && *p != ',' && *p != '}' && !isspace((unsigned char)*p) && o + 1 < outcap) {
-            out[o++] = *p++;
-        }
-        out[o] = '\0';
-        if (o > 0) return;
-    }
-
-    snprintf(out, outcap, "null");
-}
-
-static bool has_method(const char *req, const char *method)
-{
-    char compact[96];
-    char spaced[96];
-
-    snprintf(compact, sizeof(compact), "\"method\":\"%s\"", method);
-    snprintf(spaced, sizeof(spaced), "\"method\": \"%s\"", method);
-    return strstr(req, compact) || strstr(req, spaced);
-}
-
 static void extract_args_array(const char *json, strvec_t *args)
 {
     const char *p = strstr(json, "\"args\"");
@@ -318,6 +295,261 @@ static void extract_args_array(const char *json, strvec_t *args)
         if (*p == '"') p++;
         (void)strvec_push(args, item);
     }
+}
+
+static void request_ctx_init(request_ctx_t *ctx)
+{
+    memset(ctx, 0, sizeof(*ctx));
+    snprintf(ctx->id_raw, sizeof(ctx->id_raw), "null");
+    strvec_init(&ctx->args);
+}
+
+static void request_ctx_free(request_ctx_t *ctx)
+{
+    strvec_free(&ctx->args);
+}
+
+static int jsmn_skip_token(const jsmntok_t *tokens, int idx)
+{
+    int end = idx + 1;
+    if (tokens[idx].type == JSMN_OBJECT) {
+        for (int i = 0; i < tokens[idx].size; i++) {
+            end = jsmn_skip_token(tokens, end); /* key */
+            end = jsmn_skip_token(tokens, end); /* value */
+        }
+        return end;
+    }
+    if (tokens[idx].type == JSMN_ARRAY) {
+        for (int i = 0; i < tokens[idx].size; i++) {
+            end = jsmn_skip_token(tokens, end);
+        }
+        return end;
+    }
+    return end;
+}
+
+static bool jsmn_token_eq(const char *json, const jsmntok_t *tok, const char *s)
+{
+    size_t n = strlen(s);
+    if (tok->type != JSMN_STRING) return false;
+    if (tok->start < 0 || tok->end < tok->start) return false;
+    if ((size_t)(tok->end - tok->start) != n) return false;
+    return strncmp(json + tok->start, s, n) == 0;
+}
+
+static bool jsmn_token_to_string(const char *json, const jsmntok_t *tok, char *out, size_t outcap)
+{
+    if (!tok || tok->type != JSMN_STRING || tok->start < 0 || tok->end < tok->start) return false;
+    size_t n = (size_t)(tok->end - tok->start);
+    if (n + 1 > outcap) return false;
+    memcpy(out, json + tok->start, n);
+    out[n] = '\0';
+    return true;
+}
+
+static bool jsmn_token_to_number(const char *json, const jsmntok_t *tok, double *out)
+{
+    if (!tok || tok->type != JSMN_PRIMITIVE || tok->start < 0 || tok->end <= tok->start) return false;
+    char buf[64];
+    size_t n = (size_t)(tok->end - tok->start);
+    if (n + 1 > sizeof(buf)) return false;
+    memcpy(buf, json + tok->start, n);
+    buf[n] = '\0';
+    char *endptr = NULL;
+    double v = strtod(buf, &endptr);
+    if (endptr == buf || *endptr != '\0') return false;
+    *out = v;
+    return true;
+}
+
+static bool jsmn_token_to_bool(const char *json, const jsmntok_t *tok, bool *out)
+{
+    if (!tok || tok->type != JSMN_PRIMITIVE || tok->start < 0 || tok->end <= tok->start) return false;
+    size_t n = (size_t)(tok->end - tok->start);
+    if (n == 4 && strncmp(json + tok->start, "true", 4) == 0) {
+        *out = true;
+        return true;
+    }
+    if (n == 5 && strncmp(json + tok->start, "false", 5) == 0) {
+        *out = false;
+        return true;
+    }
+    return false;
+}
+
+static int jsmn_object_get(const char *json, const jsmntok_t *tokens, int obj_idx, const char *key)
+{
+    if (obj_idx < 0 || tokens[obj_idx].type != JSMN_OBJECT) return -1;
+
+    int i = obj_idx + 1;
+    for (int pair = 0; pair < tokens[obj_idx].size; pair++) {
+        int key_idx = i;
+        int val_idx = i + 1;
+        if (tokens[key_idx].type == JSMN_STRING && jsmn_token_eq(json, &tokens[key_idx], key)) {
+            return val_idx;
+        }
+        i = jsmn_skip_token(tokens, val_idx);
+    }
+    return -1;
+}
+
+static void jsmn_id_to_raw(const char *json, const jsmntok_t *tok, char *out, size_t outcap)
+{
+    if (!tok) {
+        snprintf(out, outcap, "null");
+        return;
+    }
+
+    if (tok->type == JSMN_STRING) {
+        char tmp[64];
+        char esc[128];
+        if (!jsmn_token_to_string(json, tok, tmp, sizeof(tmp))) {
+            snprintf(out, outcap, "null");
+            return;
+        }
+        json_escape(tmp, esc, sizeof(esc));
+        snprintf(out, outcap, "\"%s\"", esc);
+        return;
+    }
+
+    if (tok->start >= 0 && tok->end > tok->start) {
+        size_t n = (size_t)(tok->end - tok->start);
+        if (n + 1 > outcap) n = outcap - 1;
+        memcpy(out, json + tok->start, n);
+        out[n] = '\0';
+        return;
+    }
+
+    snprintf(out, outcap, "null");
+}
+
+static void parse_args_fields(const char *json, const jsmntok_t *tokens, int obj_idx, request_ctx_t *ctx)
+{
+    if (obj_idx < 0 || tokens[obj_idx].type != JSMN_OBJECT) return;
+
+    int path_idx = jsmn_object_get(json, tokens, obj_idx, "path");
+    if (path_idx >= 0 && jsmn_token_to_string(json, &tokens[path_idx], ctx->path, sizeof(ctx->path))) {
+        ctx->has_path = true;
+    }
+
+    int days_idx = jsmn_object_get(json, tokens, obj_idx, "days");
+    if (days_idx >= 0 && jsmn_token_to_number(json, &tokens[days_idx], &ctx->days)) {
+        ctx->has_days = true;
+    }
+
+    int dry_idx = jsmn_object_get(json, tokens, obj_idx, "dryRun");
+    if (dry_idx < 0) dry_idx = jsmn_object_get(json, tokens, obj_idx, "dry_run");
+    if (dry_idx >= 0 && jsmn_token_to_bool(json, &tokens[dry_idx], &ctx->dry_run)) {
+        ctx->has_dry_run = true;
+    }
+
+    int query_idx = jsmn_object_get(json, tokens, obj_idx, "query");
+    if (query_idx >= 0) {
+        (void)jsmn_token_to_string(json, &tokens[query_idx], ctx->query, sizeof(ctx->query));
+    }
+
+    int name_idx = jsmn_object_get(json, tokens, obj_idx, "name");
+    if (name_idx >= 0) {
+        (void)jsmn_token_to_string(json, &tokens[name_idx], ctx->name, sizeof(ctx->name));
+    }
+
+    int top_k_idx = jsmn_object_get(json, tokens, obj_idx, "topK");
+    if (top_k_idx >= 0 && jsmn_token_to_number(json, &tokens[top_k_idx], &ctx->top_k)) {
+        ctx->has_top_k = true;
+    }
+
+    int args_idx = jsmn_object_get(json, tokens, obj_idx, "args");
+    if (args_idx >= 0 && tokens[args_idx].type == JSMN_ARRAY) {
+        int pos = args_idx + 1;
+        for (int i = 0; i < tokens[args_idx].size; i++) {
+            if (tokens[pos].type == JSMN_STRING) {
+                char item[SMALL_BUF];
+                if (jsmn_token_to_string(json, &tokens[pos], item, sizeof(item))) {
+                    (void)strvec_push(&ctx->args, item);
+                }
+            }
+            pos = jsmn_skip_token(tokens, pos);
+        }
+    }
+}
+
+static bool parse_request_ctx(const char *req, request_ctx_t *ctx)
+{
+    jsmn_parser parser;
+    jsmntok_t tokens[256];
+    jsmn_init(&parser);
+    int ntok = jsmn_parse(&parser, req, strlen(req), tokens, 256);
+    if (ntok < 1 || tokens[0].type != JSMN_OBJECT) return false;
+
+    int id_idx = jsmn_object_get(req, tokens, 0, "id");
+    if (id_idx >= 0) jsmn_id_to_raw(req, &tokens[id_idx], ctx->id_raw, sizeof(ctx->id_raw));
+
+    char selector[64] = {0};
+    int method_idx = jsmn_object_get(req, tokens, 0, "method");
+    if (method_idx >= 0) {
+        (void)jsmn_token_to_string(req, &tokens[method_idx], selector, sizeof(selector));
+    } else {
+        int type_idx = jsmn_object_get(req, tokens, 0, "type");
+        if (type_idx >= 0) (void)jsmn_token_to_string(req, &tokens[type_idx], selector, sizeof(selector));
+    }
+
+    if (strcmp(selector, "initialize") == 0) {
+        ctx->kind = REQUEST_LEGACY_INITIALIZE;
+        return true;
+    }
+    if (strcmp(selector, "list_tools") == 0) {
+        ctx->kind = REQUEST_LEGACY_LIST_TOOLS;
+        return true;
+    }
+    if (strcmp(selector, "call_tool") == 0) {
+        ctx->kind = REQUEST_LEGACY_CALL_TOOL;
+    } else if (strcmp(selector, "tools/list") == 0) {
+        ctx->kind = REQUEST_NATIVE_TOOLS_LIST;
+        return true;
+    } else if (strcmp(selector, "tools/call") == 0) {
+        ctx->kind = REQUEST_NATIVE_TOOLS_CALL;
+    } else {
+        ctx->kind = REQUEST_UNKNOWN;
+        return true;
+    }
+
+    int root_tool_idx = jsmn_object_get(req, tokens, 0, "tool");
+    if (root_tool_idx >= 0) {
+        (void)jsmn_token_to_string(req, &tokens[root_tool_idx], ctx->tool, sizeof(ctx->tool));
+    } else {
+        int root_name_idx = jsmn_object_get(req, tokens, 0, "name");
+        if (root_name_idx >= 0) {
+            (void)jsmn_token_to_string(req, &tokens[root_name_idx], ctx->tool, sizeof(ctx->tool));
+        }
+    }
+
+    int params_idx = jsmn_object_get(req, tokens, 0, "params");
+    int args_obj = -1;
+    int root_args_obj = jsmn_object_get(req, tokens, 0, "arguments");
+    if (root_args_obj < 0) root_args_obj = jsmn_object_get(req, tokens, 0, "args");
+
+    if (params_idx >= 0 && tokens[params_idx].type == JSMN_OBJECT) {
+        int p_tool_idx = jsmn_object_get(req, tokens, params_idx, "tool");
+        if (ctx->tool[0] == '\0' && p_tool_idx >= 0) {
+            (void)jsmn_token_to_string(req, &tokens[p_tool_idx], ctx->tool, sizeof(ctx->tool));
+        }
+
+        int p_args_idx = jsmn_object_get(req, tokens, params_idx, "args");
+        if (p_args_idx < 0) p_args_idx = jsmn_object_get(req, tokens, params_idx, "arguments");
+        if (p_args_idx >= 0 && tokens[p_args_idx].type == JSMN_OBJECT) {
+            args_obj = p_args_idx;
+        } else {
+            args_obj = params_idx;
+        }
+    }
+
+    if (args_obj < 0 && root_args_obj >= 0 && tokens[root_args_obj].type == JSMN_OBJECT) {
+        args_obj = root_args_obj;
+    }
+
+    if (args_obj >= 0) parse_args_fields(req, tokens, args_obj, ctx);
+
+    return true;
 }
 
 static bool path_within_workspace(const char *candidate)
@@ -1226,63 +1458,55 @@ static void build_agent_command_plan(const char *req, char *resp, size_t cap)
     build_agent_command_plan_local(query, resp, cap);
 }
 
-static void build_legacy_initialize(const char *req, char *resp, size_t cap)
+static void build_legacy_initialize(const request_ctx_t *ctx, char *resp, size_t cap)
 {
-    char id_raw[64];
-    extract_json_id_raw(req, id_raw, sizeof(id_raw));
-
     snprintf(resp, cap,
              "{\"id\":%s,\"type\":\"response\",\"result\":{\"server\":\"CoreShell MCP Server\",\"version\":\"1.0\"}}",
-             id_raw);
+             ctx->id_raw);
 }
 
-static void build_legacy_list_tools(const char *req, char *resp, size_t cap)
+static void build_legacy_list_tools(const request_ctx_t *ctx, char *resp, size_t cap)
 {
-    char id_raw[64];
-    extract_json_id_raw(req, id_raw, sizeof(id_raw));
-
     snprintf(resp, cap,
              "{\"id\":%s,\"type\":\"response\",\"result\":{\"tools\":["
              "{\"name\":\"list_files\",\"desc\":\"List files in a directory\",\"schema\":{\"path\":\"string\"}},"
              "{\"name\":\"get_time\",\"desc\":\"Get server time\",\"schema\":{}},"
              "{\"name\":\"delete_older_than_days\",\"desc\":\"Delete files older than N days\",\"schema\":{\"path\":\"string\",\"days\":\"integer\",\"dryRun\":\"boolean\"}}"
              "]}}",
-             id_raw);
+             ctx->id_raw);
 }
 
-static void build_legacy_tool_error(const char *req, char *resp, size_t cap, const char *msg)
+static void build_legacy_tool_error(const request_ctx_t *ctx, char *resp, size_t cap, const char *msg)
 {
-    char id_raw[64];
     char esc[SMALL_BUF * 2];
-    extract_json_id_raw(req, id_raw, sizeof(id_raw));
     json_escape(msg, esc, sizeof(esc));
 
     snprintf(resp, cap,
              "{\"id\":%s,\"type\":\"response\",\"result\":{\"error\":\"%s\"}}",
-             id_raw, esc);
+             ctx->id_raw, esc);
 }
 
-static void build_legacy_list_files(const char *req, char *resp, size_t cap)
+static void build_legacy_list_files(const request_ctx_t *ctx, char *resp, size_t cap)
 {
-    char id_raw[64];
     char raw_path[PATH_MAX];
     char resolved[PATH_MAX];
     char output[16384];
     size_t out_len = 0;
 
-    extract_json_id_raw(req, id_raw, sizeof(id_raw));
-    if (!extract_json_string(req, "path", raw_path, sizeof(raw_path))) {
+    if (ctx->has_path) {
+        snprintf(raw_path, sizeof(raw_path), "%s", ctx->path);
+    } else {
         snprintf(raw_path, sizeof(raw_path), ".");
     }
 
     if (!resolve_workspace_path(raw_path, resolved, sizeof(resolved))) {
-        build_legacy_tool_error(req, resp, cap, "path must be inside workspace");
+        build_legacy_tool_error(ctx, resp, cap, "path must be inside workspace");
         return;
     }
 
     DIR *dir = opendir(resolved);
     if (!dir) {
-        build_legacy_tool_error(req, resp, cap, "list_files failed");
+        build_legacy_tool_error(ctx, resp, cap, "list_files failed");
         return;
     }
 
@@ -1308,59 +1532,55 @@ static void build_legacy_list_files(const char *req, char *resp, size_t cap)
 
     snprintf(resp, cap,
              "{\"id\":%s,\"type\":\"response\",\"result\":{\"tool\":\"list_files\",\"output\":\"%s\"}}",
-             id_raw, out_esc);
+             ctx->id_raw, out_esc);
 
     strvec_free(&entries);
 }
 
-static void build_legacy_get_time(const char *req, char *resp, size_t cap)
+static void build_legacy_get_time(const request_ctx_t *ctx, char *resp, size_t cap)
 {
-    char id_raw[64];
     char buf[64];
     time_t t = time(NULL);
     struct tm tm_now;
 
-    extract_json_id_raw(req, id_raw, sizeof(id_raw));
     localtime_r(&t, &tm_now);
     strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_now);
 
     snprintf(resp, cap,
              "{\"id\":%s,\"type\":\"response\",\"result\":{\"tool\":\"get_time\",\"time\":\"%s\"}}",
-             id_raw, buf);
+             ctx->id_raw, buf);
 }
 
-static void build_legacy_delete_older_than_days(const char *req, char *resp, size_t cap)
+static void build_legacy_delete_older_than_days(const request_ctx_t *ctx, char *resp, size_t cap)
 {
-    char id_raw[64];
     char raw_path[PATH_MAX];
     char resolved[PATH_MAX];
     char output[16384];
     size_t output_len = 0;
-    double days = 0.0;
+    double days = ctx->days;
     bool dry_run = true;
 
-    extract_json_id_raw(req, id_raw, sizeof(id_raw));
+    if (ctx->has_dry_run) dry_run = ctx->dry_run;
 
-    if (!extract_json_string(req, "path", raw_path, sizeof(raw_path))) {
-        build_legacy_tool_error(req, resp, cap, "path is required");
+    if (!ctx->has_path) {
+        build_legacy_tool_error(ctx, resp, cap, "path is required");
         return;
     }
-    if (!extract_json_number(req, "days", &days) || days <= 0) {
-        build_legacy_tool_error(req, resp, cap, "invalid days value");
+    snprintf(raw_path, sizeof(raw_path), "%s", ctx->path);
+
+    if (!ctx->has_days || days <= 0) {
+        build_legacy_tool_error(ctx, resp, cap, "invalid days value");
         return;
-    }
-    if (!extract_json_bool(req, "dryRun", &dry_run)) {
-        (void)extract_json_bool(req, "dry_run", &dry_run);
     }
 
     if (!resolve_workspace_path(raw_path, resolved, sizeof(resolved))) {
-        build_legacy_tool_error(req, resp, cap, "path must be inside workspace");
+        build_legacy_tool_error(ctx, resp, cap, "path must be inside workspace");
         return;
     }
 
     struct stat st;
     if (stat(resolved, &st) != 0) {
-        build_legacy_tool_error(req, resp, cap, "stat failed");
+        build_legacy_tool_error(ctx, resp, cap, "stat failed");
         return;
     }
 
@@ -1376,7 +1596,7 @@ static void build_legacy_delete_older_than_days(const char *req, char *resp, siz
     } else if (S_ISDIR(st.st_mode)) {
         scan_old_files(resolved, threshold_ms, &matched);
     } else {
-        build_legacy_tool_error(req, resp, cap, "path must be file or directory");
+        build_legacy_tool_error(ctx, resp, cap, "path must be file or directory");
         strvec_free(&matched);
         return;
     }
@@ -1407,39 +1627,40 @@ static void build_legacy_delete_older_than_days(const char *req, char *resp, siz
 
     snprintf(resp, cap,
              "{\"id\":%s,\"type\":\"response\",\"result\":{\"tool\":\"delete_older_than_days\",\"path\":\"%s\",\"days\":%.0f,\"dryRun\":%s,\"matchedCount\":%zu,\"deletedCount\":%zu,\"output\":\"%s\"}}",
-             id_raw, path_esc, days, dry_run ? "true" : "false", matched.count, deleted, out_esc);
+             ctx->id_raw, path_esc, days, dry_run ? "true" : "false", matched.count, deleted, out_esc);
 
     strvec_free(&matched);
 }
 
-static void handle_legacy_call_tool(const char *req, char *resp, size_t cap)
+static void handle_legacy_call_tool(const request_ctx_t *ctx, char *resp, size_t cap)
 {
-    char tool[SMALL_BUF];
-    if (!extract_json_string(req, "tool", tool, sizeof(tool))) {
-        build_legacy_tool_error(req, resp, cap, "tool is required");
+    if (ctx->tool[0] == '\0') {
+        build_legacy_tool_error(ctx, resp, cap, "tool is required");
         return;
     }
 
-    if (strcmp(tool, "list_files") == 0) {
-        build_legacy_list_files(req, resp, cap);
+    if (strcmp(ctx->tool, "list_files") == 0) {
+        build_legacy_list_files(ctx, resp, cap);
         return;
     }
-    if (strcmp(tool, "get_time") == 0) {
-        build_legacy_get_time(req, resp, cap);
+    if (strcmp(ctx->tool, "get_time") == 0) {
+        build_legacy_get_time(ctx, resp, cap);
         return;
     }
-    if (strcmp(tool, "delete_older_than_days") == 0) {
-        build_legacy_delete_older_than_days(req, resp, cap);
+    if (strcmp(ctx->tool, "delete_older_than_days") == 0) {
+        build_legacy_delete_older_than_days(ctx, resp, cap);
         return;
     }
 
-    build_legacy_tool_error(req, resp, cap, "unknown tool");
+    build_legacy_tool_error(ctx, resp, cap, "unknown tool");
 }
 
-static void handle_tools_call(const char *req, char *resp, size_t cap)
+static void handle_tools_call(const char *req, const request_ctx_t *ctx, char *resp, size_t cap)
 {
     char tool[SMALL_BUF];
-    if (!extract_json_string(req, "tool", tool, sizeof(tool))) {
+    if (ctx->tool[0] != '\0') {
+        snprintf(tool, sizeof(tool), "%s", ctx->tool);
+    } else if (!extract_json_string(req, "tool", tool, sizeof(tool))) {
         if (!extract_json_string(req, "name", tool, sizeof(tool))) {
             respond_error(resp, cap, "tools/call", "BAD_ARGUMENTS", "tool is required");
             return;
@@ -1486,31 +1707,54 @@ static void handle_tools_call(const char *req, char *resp, size_t cap)
     respond_error(resp, cap, "tools/call", "TOOL_NOT_FOUND", "Tool not found");
 }
 
-static void handle_request(const char *req, char *resp, size_t cap)
+static void build_legacy_notification(const request_ctx_t *ctx,
+                                      const char *event,
+                                      const char *message,
+                                      char *out,
+                                      size_t outcap)
 {
-    if (has_method(req, "initialize")) {
-        build_legacy_initialize(req, resp, cap);
+    char event_esc[SMALL_BUF];
+    char msg_esc[SMALL_BUF * 2];
+    json_escape(event, event_esc, sizeof(event_esc));
+    json_escape(message, msg_esc, sizeof(msg_esc));
+    snprintf(out, outcap,
+             "{\"id\":%s,\"type\":\"notification\",\"event\":\"%s\",\"message\":\"%s\"}",
+             ctx->id_raw, event_esc, msg_esc);
+}
+
+static void handle_request(const char *req, const request_ctx_t *ctx, char *resp, size_t cap)
+{
+    if (ctx->kind == REQUEST_LEGACY_INITIALIZE) {
+        build_legacy_initialize(ctx, resp, cap);
         return;
     }
-    if (has_method(req, "list_tools")) {
-        build_legacy_list_tools(req, resp, cap);
+    if (ctx->kind == REQUEST_LEGACY_LIST_TOOLS) {
+        build_legacy_list_tools(ctx, resp, cap);
         return;
     }
-    if (has_method(req, "call_tool")) {
-        handle_legacy_call_tool(req, resp, cap);
+    if (ctx->kind == REQUEST_LEGACY_CALL_TOOL) {
+        handle_legacy_call_tool(ctx, resp, cap);
         return;
     }
 
-    if (strstr(req, "\"type\":\"tools/list\"") || strstr(req, "\"method\":\"tools/list\"")) {
+    if (ctx->kind == REQUEST_NATIVE_TOOLS_LIST) {
         build_tools_list_response(resp, cap);
         return;
     }
-    if (strstr(req, "\"type\":\"tools/call\"") || strstr(req, "\"method\":\"tools/call\"")) {
-        handle_tools_call(req, resp, cap);
+    if (ctx->kind == REQUEST_NATIVE_TOOLS_CALL) {
+        handle_tools_call(req, ctx, resp, cap);
         return;
     }
 
     respond_error(resp, cap, "unknown", "UNKNOWN_METHOD", "Expected tools/list or tools/call");
+}
+
+static int send_json_line(int fd, const char *json)
+{
+    size_t len = strlen(json);
+    if (send(fd, json, len, 0) != (ssize_t)len) return -1;
+    if (send(fd, "\n", 1, 0) != 1) return -1;
+    return 0;
 }
 
 static ssize_t recv_line(int fd, char *buf, size_t cap)
@@ -1529,6 +1773,8 @@ static ssize_t recv_line(int fd, char *buf, size_t cap)
 
 int main(void)
 {
+    signal(SIGPIPE, SIG_IGN);
+
     if (!getcwd(g_workspace, sizeof(g_workspace))) {
         perror("getcwd");
         return 1;
@@ -1576,14 +1822,44 @@ int main(void)
             continue;
         }
 
-        char req[REQ_MAX];
-        ssize_t n = recv_line(cfd, req, sizeof(req));
-        if (n > 0) {
+        for (;;) {
+            char req[REQ_MAX];
+            ssize_t n = recv_line(cfd, req, sizeof(req));
+            if (n <= 0) break;
+
+            request_ctx_t ctx;
+            request_ctx_init(&ctx);
+
             char resp[RESP_MAX];
-            handle_request(req, resp, sizeof(resp));
+            if (!parse_request_ctx(req, &ctx)) {
+                respond_error(resp, sizeof(resp), "unknown", "BAD_REQUEST", "Request must be valid JSON object");
+            } else {
+                if (ctx.kind == REQUEST_LEGACY_CALL_TOOL && strcmp(ctx.tool, "list_files") == 0) {
+                    char note[SMALL_BUF * 3];
+                    build_legacy_notification(&ctx, "tool_progress", "listing files", note, sizeof(note));
+                    if (send_json_line(cfd, note) != 0) {
+                        request_ctx_free(&ctx);
+                        break;
+                    }
+                }
+                if (ctx.kind == REQUEST_LEGACY_CALL_TOOL && strcmp(ctx.tool, "delete_older_than_days") == 0) {
+                    char note[SMALL_BUF * 3];
+                    build_legacy_notification(&ctx, "tool_progress", "scanning files", note, sizeof(note));
+                    if (send_json_line(cfd, note) != 0) {
+                        request_ctx_free(&ctx);
+                        break;
+                    }
+                }
+                handle_request(req, &ctx, resp, sizeof(resp));
+            }
+
             log_call(req, resp);
-            send(cfd, resp, strlen(resp), 0);
-            send(cfd, "\n", 1, 0);
+            if (send_json_line(cfd, resp) != 0) {
+                request_ctx_free(&ctx);
+                break;
+            }
+
+            request_ctx_free(&ctx);
         }
 
         close(cfd);

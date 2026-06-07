@@ -76,6 +76,8 @@ This runs the native C MCP server on port `9000`.
 - One JSON object per line
 - Requests use `type: "tools/list"` or `type: "tools/call"`
 - Responses are JSON objects with a stable `ok` field and either `tools` or `result`
+- Native C server now supports persistent TCP sessions (multiple request/response lines per connection)
+- Native C server now uses structured JSON request parsing (jsmn)
 
 Compatibility mode (for classroom MCP examples) is also supported by the native C server:
 
@@ -84,6 +86,7 @@ Compatibility mode (for classroom MCP examples) is also supported by the native 
 - `method: "call_tool"` with tools `list_files`, `get_time`, `delete_older_than_days`
 
 In compatibility mode, responses echo request `id` and use a notebook-style envelope (`type: "response"`).
+For long-running legacy tool calls (for example `list_files`, `delete_older_than_days`), the native server may emit notification lines before the final response line.
 
 ### Tools
 
@@ -185,6 +188,12 @@ make test                   # Build CoreShell + test runner, then execute all te
 make test-mcp-c             # Build and run native C MCP server protocol tests
 ./test_runner               # Run already-built test binary directly
 ```
+
+`make test-mcp-c` includes strict legacy integration checks for:
+
+- notebook-style methods (`initialize`, `list_tools`, `call_tool`)
+- persistent multi-message session behavior on one socket
+- notification line + final response sequencing
 
 `make test` compiles a standalone C test runner (`test_runner`) that links directly
 against the built-in command objects, forks an isolated child per test case, and

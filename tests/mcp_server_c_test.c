@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -17,10 +18,18 @@
 
 static pid_t g_server_pid = -1;
 
+static int recv_line_fd(int fd, char *resp, size_t cap);
+
 static int connect_tcp(void)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
+
+    struct timeval timeout;
+    timeout.tv_sec = 3;
+    timeout.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -51,22 +60,43 @@ static int send_request(const char *req, char *resp, size_t cap)
         return -1;
     }
 
-    size_t off = 0;
-    while (off + 1 < cap) {
-        ssize_t n = read(fd, resp + off, cap - off - 1);
-        if (n < 0) {
+    if (recv_line_fd(fd, resp, cap) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    for (int i = 0; i < 4 && strstr(resp, "\"type\":\"notification\"") != NULL; i++) {
+        if (recv_line_fd(fd, resp, cap) != 0) {
             close(fd);
             return -1;
         }
-        if (n == 0) break;
-        off += (size_t)n;
     }
-    close(fd);
-    resp[off] = '\0';
 
-    char *newline = strchr(resp, '\n');
-    if (newline) *newline = '\0';
+    close(fd);
     return 0;
+}
+
+static int send_request_fd(int fd, const char *req)
+{
+    size_t req_len = strlen(req);
+    if (write(fd, req, req_len) != (ssize_t)req_len) return -1;
+    if (write(fd, "\n", 1) != 1) return -1;
+    return 0;
+}
+
+static int recv_line_fd(int fd, char *resp, size_t cap)
+{
+    size_t off = 0;
+    while (off + 1 < cap) {
+        char c;
+        ssize_t n = read(fd, &c, 1);
+        if (n < 0) return -1;
+        if (n == 0) break;
+        if (c == '\n') break;
+        resp[off++] = c;
+    }
+    resp[off] = '\0';
+    return off > 0 ? 0 : -1;
 }
 
 static int expect_contains(const char *haystack, const char *needle, const char *name)
@@ -160,6 +190,58 @@ static int test_legacy_call_tool_list_files(void)
     fails += expect_contains(resp, "\"tool\":\"list_files\"", "legacy call_tool list_files tool");
     fails += expect_contains(resp, "\"output\":", "legacy call_tool list_files output");
     if (fails == 0) fprintf(stdout, "[PASS] legacy call_tool list_files\n");
+    return fails;
+}
+
+static int test_legacy_persistent_session_notifications(void)
+{
+    int fd = connect_tcp();
+    if (fd < 0) {
+        fprintf(stderr, "[FAIL] legacy persistent session connect failed\n");
+        return 1;
+    }
+
+    char resp[BUF_CAP];
+    int fails = 0;
+
+    if (send_request_fd(fd, "{\"id\":11,\"method\":\"initialize\",\"params\":{}}") != 0 ||
+        recv_line_fd(fd, resp, sizeof(resp)) != 0) {
+        close(fd);
+        fprintf(stderr, "[FAIL] legacy persistent initialize I/O failed\n");
+        return 1;
+    }
+    fails += expect_contains(resp, "\"id\":11", "persistent initialize id");
+    fails += expect_contains(resp, "\"type\":\"response\"", "persistent initialize type");
+
+    if (send_request_fd(fd, "{\"id\":12,\"method\":\"list_tools\",\"params\":{}}") != 0 ||
+        recv_line_fd(fd, resp, sizeof(resp)) != 0) {
+        close(fd);
+        fprintf(stderr, "[FAIL] legacy persistent list_tools I/O failed\n");
+        return 1;
+    }
+    fails += expect_contains(resp, "\"id\":12", "persistent list_tools id");
+    fails += expect_contains(resp, "\"list_files\"", "persistent list_tools payload");
+
+    if (send_request_fd(fd, "{\"id\":13,\"method\":\"call_tool\",\"params\":{\"tool\":\"list_files\",\"args\":{\"path\":\".\"}}}") != 0 ||
+        recv_line_fd(fd, resp, sizeof(resp)) != 0) {
+        close(fd);
+        fprintf(stderr, "[FAIL] legacy persistent list_files notification I/O failed\n");
+        return 1;
+    }
+    fails += expect_contains(resp, "\"id\":13", "persistent notification id");
+    fails += expect_contains(resp, "\"type\":\"notification\"", "persistent notification type");
+
+    if (recv_line_fd(fd, resp, sizeof(resp)) != 0) {
+        close(fd);
+        fprintf(stderr, "[FAIL] legacy persistent list_files response I/O failed\n");
+        return 1;
+    }
+    fails += expect_contains(resp, "\"id\":13", "persistent list_files response id");
+    fails += expect_contains(resp, "\"tool\":\"list_files\"", "persistent list_files response tool");
+
+    close(fd);
+
+    if (fails == 0) fprintf(stdout, "[PASS] legacy persistent session + notifications\n");
     return fails;
 }
 
@@ -324,6 +406,7 @@ int main(void)
     fails += test_legacy_list_tools();
     fails += test_legacy_call_tool_get_time();
     fails += test_legacy_call_tool_list_files();
+    fails += test_legacy_persistent_session_notifications();
     fails += test_tools_list();
     fails += test_lookup_echo();
     fails += test_delete_dry_run();

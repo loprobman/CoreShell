@@ -1,6 +1,6 @@
 ## Socket Server Status: CoreShell MCP Compatibility
 
-This note summarizes what has already been implemented for the MCP socket server, what is still missing for full parity with the LSP8_ShellMCP teaching narrative, and how to test the current implementation step by step.
+This note summarizes what is implemented now in the native C MCP socket server, what still remains for strict full parity with the LSP8_ShellMCP teaching narrative, and how to test the current implementation step by step.
 
 ## 1) Summary of Implemented Changes
 
@@ -43,18 +43,47 @@ Documented in:
 
 This preserves compatibility with current CoreShell tests and tooling.
 
-### D. Regression tests were added for legacy methods
+### D. Persistent multi-message socket sessions are now implemented
+
+Implemented in:
+- [mcp_server.c](mcp_server.c)
+
+Behavior:
+- One client TCP connection can send multiple newline-delimited JSON requests.
+- Server responds line-by-line and keeps the connection open until client disconnect.
+
+### E. Structured request parsing (jsmn) is now implemented
+
+Implemented in:
+- [jsmn.h](jsmn.h)
+- [mcp_server.c](mcp_server.c)
+
+Behavior:
+- Request method/type/tool/id/arguments are decoded from parsed JSON tokens.
+- This replaced fragile method detection by raw string matching for request routing.
+
+### F. Legacy progress notifications are now implemented
+
+Implemented in:
+- [mcp_server.c](mcp_server.c)
+
+Behavior:
+- In legacy `call_tool`, server can emit notification lines (`type=notification`) before the final response.
+- Current notifications are emitted for `list_files` and `delete_older_than_days`.
+
+### G. Regression tests were added for legacy methods
 
 Added tests:
 - legacy initialize
 - legacy list_tools
 - legacy call_tool get_time
 - legacy call_tool list_files
+- strict legacy persistent session + notifications
 
 Implemented in:
 - [tests/mcp_server_c_test.c](tests/mcp_server_c_test.c)
 
-### E. A classroom-friendly legacy client was added
+### H. A classroom-friendly legacy client was added
 
 Added script:
 - [legacy_mcp_client.py](legacy_mcp_client.py)
@@ -66,21 +95,17 @@ Purpose:
 
 These are the remaining gaps if strict parity with LSP8_ShellMCP behavior is required.
 
-1. Persistent multi-message connection flow
-- Current native server handles one request line and then closes the socket.
-- LSP8 narrative demonstrates continuous multi-message interaction over one connection.
-
-2. Progress notifications during long operations
-- LSP8 examples include notification/progress style messages.
-- Current native legacy path returns a single final response only.
-
-3. Robust JSON parsing
-- Current parser is lightweight string extraction.
-- Full parity and hardening would require structured JSON parsing with strict field validation.
-
-4. Exact wire-level semantics across all edge cases
+1. Exact wire-level semantics across all edge cases
 - Core behavior is functionally compatible for core lab tasks.
 - Strict message schema and sequencing parity still needs additional refinements.
+
+2. Notification coverage breadth
+- Notifications are currently implemented for selected legacy tools.
+- Full parity may require notifications for all long-running operations and richer event taxonomy.
+
+3. Advanced schema validation depth
+- Structured parsing is now implemented.
+- Additional strict schema validation rules can be added for stronger rejection behavior on malformed payloads.
 
 ## 3) Step-by-Step Test Cases to Exercise Implemented Features
 
@@ -154,49 +179,67 @@ Expected:
 - Response result includes matchedCount/deletedCount/output.
 - dryRun is true.
 
-### Test Set D: CoreShell Native MCP Protocol (unchanged behavior)
+### Test Set D: Strict Legacy Persistent Session + Notifications (single socket)
 
-Step 9: Native tools/list
+Step 9: Open a persistent netcat session
+
+	nc 127.0.0.1 9000
+
+Step 10: Send these lines in the same open session
+
+	{"id":11,"method":"initialize","params":{}}
+	{"id":12,"method":"list_tools","params":{}}
+	{"id":13,"method":"call_tool","params":{"tool":"list_files","args":{"path":"."}}}
+
+Expected:
+- First response is initialize result for id 11.
+- Second response is list_tools result for id 12.
+- Third line includes `type":"notification"` for id 13.
+- Next line includes final `type":"response"` with `tool":"list_files"` for id 13.
+
+### Test Set E: CoreShell Native MCP Protocol (unchanged behavior)
+
+Step 11: Native tools/list
 
 	printf '{"type":"tools/list"}\n' | nc 127.0.0.1 9000
 
 Expected:
 - Response ok=true and tools array includes registry, shell, filesystem, rag, and agent tools.
 
-Step 10: Native tools/call lookup example
+Step 12: Native tools/call lookup example
 
 	printf '{"type":"tools/call","tool":"registry.package.lookup","arguments":{"name":"echo"}}\n' | nc 127.0.0.1 9000
 
 Expected:
 - Response ok=true with package metadata for echo.
 
-### Test Set E: Automated C Test Suite
+### Test Set F: Automated C Test Suite
 
-Step 11: Run MCP C tests
+Step 13: Run MCP C tests
 
 	make test-mcp-c
 
 Expected:
-- Pass lines for legacy and native tests.
+- Pass lines for legacy, strict persistent-session notification test, and native tests.
 - Final line indicates all native C MCP server tests passed.
 
-### Test Set F: Negative and Safety Cases
+### Test Set G: Negative and Safety Cases
 
-Step 12: Unknown method
+Step 14: Unknown method
 
 	printf '{"type":"ping"}\n' | nc 127.0.0.1 9000
 
 Expected:
 - Error response with UNKNOWN_METHOD.
 
-Step 13: Legacy unknown tool
+Step 15: Legacy unknown tool
 
 	printf '{"id":9,"method":"call_tool","params":{"tool":"no_such_tool","args":{}}}\n' | nc 127.0.0.1 9000
 
 Expected:
 - Legacy response with result.error = unknown tool.
 
-Step 14: Path safety check
+Step 16: Path safety check
 
 	printf '{"id":10,"method":"call_tool","params":{"tool":"delete_older_than_days","args":{"path":"/etc","days":1,"dryRun":true}}}\n' | nc 127.0.0.1 9000
 
@@ -205,8 +248,8 @@ Expected:
 
 ## 4) Recommended Next Implementation for Full LSP8 Parity
 
-1. Convert connection handling to persistent read loop per client.
-2. Add optional progress notification messages before final responses.
-3. Replace naive JSON extraction with strict parser-backed request decoding.
-4. Extend tests to verify multiple requests on one TCP session.
+1. Expand notification semantics and coverage across additional long-running tools.
+2. Add deeper schema-level validation and explicit typed error variants.
+3. Add high-volume/session longevity tests and malformed JSON fuzz-style tests.
+4. Add docs/examples for mixed legacy + native requests in one persistent session.
 
