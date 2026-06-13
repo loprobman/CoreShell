@@ -57,11 +57,35 @@ static rag_doc_t g_rag_corpus[RAG_MAX_DOCS];
 static size_t    g_rag_count = 0;
 static bool      g_rag_ready = false;
 
+typedef struct {
+    bool enable_native;
+    bool enable_legacy;
+    bool enable_ftp;
+} service_config_t;
+
+typedef struct {
+    bool ftp_user_set;
+    char ftp_user[64];
+} connection_session_t;
+
+static service_config_t g_service_cfg = {
+    .enable_native = true,
+    .enable_legacy = true,
+    .enable_ftp = true,
+};
+static bool g_config_loaded = false;
+
 struct strvec_s {
     char **items;
     size_t count;
     size_t cap;
 };
+
+static strvec_t g_disabled_tools;
+
+static bool resolve_workspace_path(const char *raw, char *out, size_t outcap);
+static int cmd_name_cmp(const void *a, const void *b);
+static int appendf(char *dst, size_t cap, size_t *len, const char *fmt, ...);
 
 typedef struct {
     request_kind_t kind;
@@ -110,6 +134,335 @@ static bool strvec_push(strvec_t *v, const char *s)
     if (!v->items[v->count]) return false;
     v->count += 1;
     return true;
+}
+
+static void trim_inplace(char *s)
+{
+    char *start = s;
+    while (*start && isspace((unsigned char)*start)) start++;
+    if (start != s) memmove(s, start, strlen(start) + 1);
+
+    size_t n = strlen(s);
+    while (n > 0 && isspace((unsigned char)s[n - 1])) {
+        s[n - 1] = '\0';
+        n--;
+    }
+}
+
+static bool parse_bool_text(const char *raw, bool fallback)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%s", raw ? raw : "");
+    trim_inplace(buf);
+    for (size_t i = 0; buf[i]; i++) buf[i] = (char)tolower((unsigned char)buf[i]);
+
+    if (strcmp(buf, "1") == 0 || strcmp(buf, "true") == 0 || strcmp(buf, "yes") == 0 || strcmp(buf, "on") == 0)
+        return true;
+    if (strcmp(buf, "0") == 0 || strcmp(buf, "false") == 0 || strcmp(buf, "no") == 0 || strcmp(buf, "off") == 0)
+        return false;
+    return fallback;
+}
+
+static void add_disabled_tools_csv(const char *csv)
+{
+    if (!csv || csv[0] == '\0') return;
+
+    char buf[1024];
+    snprintf(buf, sizeof(buf), "%s", csv);
+
+    char *tok = strtok(buf, ",");
+    while (tok) {
+        trim_inplace(tok);
+        if (tok[0] != '\0') (void)strvec_push(&g_disabled_tools, tok);
+        tok = strtok(NULL, ",");
+    }
+}
+
+static bool is_tool_disabled(const char *tool)
+{
+    if (!tool || tool[0] == '\0') return false;
+    for (size_t i = 0; i < g_disabled_tools.count; i++) {
+        if (strcmp(g_disabled_tools.items[i], tool) == 0) return true;
+    }
+    return false;
+}
+
+static void load_service_config(void)
+{
+    if (g_config_loaded) return;
+    g_config_loaded = true;
+
+    strvec_init(&g_disabled_tools);
+
+    char cfg_path[PATH_MAX];
+    if (snprintf(cfg_path, sizeof(cfg_path), "%s/socket_server.conf", g_workspace) < (int)sizeof(cfg_path)) {
+        FILE *fp = fopen(cfg_path, "r");
+        if (fp) {
+            char line[1024];
+            while (fgets(line, sizeof(line), fp)) {
+                trim_inplace(line);
+                if (line[0] == '\0' || line[0] == '#') continue;
+
+                char *eq = strchr(line, '=');
+                if (!eq) continue;
+                *eq = '\0';
+                char *key = line;
+                char *val = eq + 1;
+                trim_inplace(key);
+                trim_inplace(val);
+
+                if (strcmp(key, "enable_native") == 0) g_service_cfg.enable_native = parse_bool_text(val, g_service_cfg.enable_native);
+                else if (strcmp(key, "enable_legacy") == 0) g_service_cfg.enable_legacy = parse_bool_text(val, g_service_cfg.enable_legacy);
+                else if (strcmp(key, "enable_ftp") == 0) g_service_cfg.enable_ftp = parse_bool_text(val, g_service_cfg.enable_ftp);
+                else if (strcmp(key, "disable_tool") == 0) add_disabled_tools_csv(val);
+            }
+            fclose(fp);
+        }
+    }
+
+    const char *env_native = getenv("CORESH_ENABLE_NATIVE");
+    const char *env_legacy = getenv("CORESH_ENABLE_LEGACY");
+    const char *env_ftp = getenv("CORESH_ENABLE_FTP");
+    const char *env_disabled = getenv("CORESH_DISABLED_TOOLS");
+
+    if (env_native) g_service_cfg.enable_native = parse_bool_text(env_native, g_service_cfg.enable_native);
+    if (env_legacy) g_service_cfg.enable_legacy = parse_bool_text(env_legacy, g_service_cfg.enable_legacy);
+    if (env_ftp) g_service_cfg.enable_ftp = parse_bool_text(env_ftp, g_service_cfg.enable_ftp);
+    if (env_disabled) add_disabled_tools_csv(env_disabled);
+}
+
+static int b64_index(unsigned char c)
+{
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+static bool base64_decode(const char *in, unsigned char *out, size_t outcap, size_t *outlen)
+{
+    size_t o = 0;
+    int val = 0, valb = -8;
+
+    for (size_t i = 0; in && in[i]; i++) {
+        unsigned char c = (unsigned char)in[i];
+        if (isspace(c)) continue;
+        if (c == '=') break;
+        int idx = b64_index(c);
+        if (idx < 0) return false;
+        val = (val << 6) + idx;
+        valb += 6;
+        if (valb >= 0) {
+            if (o >= outcap) return false;
+            out[o++] = (unsigned char)((val >> valb) & 0xFF);
+            valb -= 8;
+        }
+    }
+
+    *outlen = o;
+    return true;
+}
+
+static void base64_encode(const unsigned char *in, size_t inlen, char *out, size_t outcap)
+{
+    static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t o = 0;
+    for (size_t i = 0; i < inlen; i += 3) {
+        unsigned int octet_a = i < inlen ? in[i] : 0;
+        unsigned int octet_b = (i + 1) < inlen ? in[i + 1] : 0;
+        unsigned int octet_c = (i + 2) < inlen ? in[i + 2] : 0;
+        unsigned int triple = (octet_a << 16) | (octet_b << 8) | octet_c;
+
+        if (o + 4 >= outcap) break;
+        out[o++] = table[(triple >> 18) & 0x3F];
+        out[o++] = table[(triple >> 12) & 0x3F];
+        out[o++] = (i + 1) < inlen ? table[(triple >> 6) & 0x3F] : '=';
+        out[o++] = (i + 2) < inlen ? table[triple & 0x3F] : '=';
+    }
+    out[o] = '\0';
+}
+
+static bool handle_ftp_style_command(const char *line,
+                                     connection_session_t *session,
+                                     char *resp,
+                                     size_t cap,
+                                     bool *should_close)
+{
+    char cmdline[REQ_MAX];
+    snprintf(cmdline, sizeof(cmdline), "%s", line ? line : "");
+    trim_inplace(cmdline);
+    if (cmdline[0] == '\0') return false;
+
+    char *sp = strchr(cmdline, ' ');
+    char *verb = cmdline;
+    char *arg = NULL;
+    if (sp) {
+        *sp = '\0';
+        arg = sp + 1;
+        trim_inplace(arg);
+    }
+
+    for (size_t i = 0; verb[i]; i++) verb[i] = (char)toupper((unsigned char)verb[i]);
+
+    if (strcmp(verb, "USER") == 0) {
+        if (!arg || arg[0] == '\0') {
+            snprintf(resp, cap, "530 USER requires a username");
+        } else {
+            session->ftp_user_set = true;
+            snprintf(session->ftp_user, sizeof(session->ftp_user), "%s", arg);
+            snprintf(resp, cap, "230 USER accepted %s", session->ftp_user);
+        }
+        return true;
+    }
+
+    if (strcmp(verb, "QUIT") == 0) {
+        snprintf(resp, cap, "221 Goodbye");
+        *should_close = true;
+        return true;
+    }
+
+    if (!session->ftp_user_set) {
+        snprintf(resp, cap, "530 Please login first with USER");
+        return true;
+    }
+
+    if (strcmp(verb, "MKD") == 0) {
+        if (!arg || arg[0] == '\0') {
+            snprintf(resp, cap, "501 MKD requires a path");
+            return true;
+        }
+        char resolved[PATH_MAX];
+        if (!resolve_workspace_path(arg, resolved, sizeof(resolved))) {
+            snprintf(resp, cap, "550 Path must be inside workspace");
+            return true;
+        }
+        if (mkdir(resolved, 0755) == 0) {
+            snprintf(resp, cap, "257 Directory created");
+        } else if (errno == EEXIST) {
+            snprintf(resp, cap, "550 Directory already exists");
+        } else {
+            snprintf(resp, cap, "550 MKD failed: %s", strerror(errno));
+        }
+        return true;
+    }
+
+    if (strcmp(verb, "LIST") == 0) {
+        char raw[PATH_MAX];
+        if (!arg || arg[0] == '\0') snprintf(raw, sizeof(raw), ".");
+        else snprintf(raw, sizeof(raw), "%s", arg);
+
+        char resolved[PATH_MAX];
+        if (!resolve_workspace_path(raw, resolved, sizeof(resolved))) {
+            snprintf(resp, cap, "550 Path must be inside workspace");
+            return true;
+        }
+
+        DIR *dir = opendir(resolved);
+        if (!dir) {
+            snprintf(resp, cap, "550 LIST failed: %s", strerror(errno));
+            return true;
+        }
+
+        strvec_t entries;
+        strvec_init(&entries);
+        struct dirent *de;
+        while ((de = readdir(dir)) != NULL) {
+            if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+            (void)strvec_push(&entries, de->d_name);
+        }
+        closedir(dir);
+        qsort(entries.items, entries.count, sizeof(char *), cmd_name_cmp);
+
+        size_t len = 0;
+        appendf(resp, cap, &len, "150 ");
+        for (size_t i = 0; i < entries.count; i++) {
+            appendf(resp, cap, &len, "%s%s", i == 0 ? "" : "\\n", entries.items[i]);
+        }
+        strvec_free(&entries);
+        return true;
+    }
+
+    if (strcmp(verb, "STOR") == 0) {
+        if (!arg || arg[0] == '\0') {
+            snprintf(resp, cap, "501 STOR requires path and base64 payload");
+            return true;
+        }
+
+        char *sp2 = strchr(arg, ' ');
+        if (!sp2) {
+            snprintf(resp, cap, "501 STOR requires path and base64 payload");
+            return true;
+        }
+        *sp2 = '\0';
+        char *path_arg = arg;
+        char *b64 = sp2 + 1;
+        trim_inplace(path_arg);
+        trim_inplace(b64);
+
+        char resolved[PATH_MAX];
+        if (!resolve_workspace_path(path_arg, resolved, sizeof(resolved))) {
+            snprintf(resp, cap, "550 Path must be inside workspace");
+            return true;
+        }
+
+        unsigned char data[REQ_MAX];
+        size_t data_len = 0;
+        if (!base64_decode(b64, data, sizeof(data), &data_len)) {
+            snprintf(resp, cap, "501 Invalid base64 payload");
+            return true;
+        }
+
+        FILE *fp = fopen(resolved, "wb");
+        if (!fp) {
+            snprintf(resp, cap, "550 STOR failed: %s", strerror(errno));
+            return true;
+        }
+        size_t wrote = fwrite(data, 1, data_len, fp);
+        fclose(fp);
+        if (wrote != data_len) {
+            snprintf(resp, cap, "550 STOR failed: short write");
+            return true;
+        }
+
+        snprintf(resp, cap, "226 Stored %zu bytes", data_len);
+        return true;
+    }
+
+    if (strcmp(verb, "RETR") == 0) {
+        if (!arg || arg[0] == '\0') {
+            snprintf(resp, cap, "501 RETR requires a path");
+            return true;
+        }
+
+        char resolved[PATH_MAX];
+        if (!resolve_workspace_path(arg, resolved, sizeof(resolved))) {
+            snprintf(resp, cap, "550 Path must be inside workspace");
+            return true;
+        }
+
+        FILE *fp = fopen(resolved, "rb");
+        if (!fp) {
+            snprintf(resp, cap, "550 File not found");
+            return true;
+        }
+        unsigned char data[REQ_MAX / 2];
+        size_t n = fread(data, 1, sizeof(data), fp);
+        fclose(fp);
+
+        char b64[REQ_MAX];
+        base64_encode(data, n, b64, sizeof(b64));
+        snprintf(resp, cap, "150 %s", b64);
+        return true;
+    }
+
+    if (strcmp(verb, "PWD") == 0) {
+        snprintf(resp, cap, "257 /");
+        return true;
+    }
+
+    return false;
 }
 
 static int appendf(char *dst, size_t cap, size_t *len, const char *fmt, ...)
@@ -598,7 +951,35 @@ static void log_call(const char *request, const char *response)
     localtime_r(&now, &tm_now);
     strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S%z", &tm_now);
 
-    fprintf(fp, "{\"ts\":\"%s\",\"request\":%s,\"response\":%s}\n", ts, request, response);
+    char req_esc[REQ_MAX * 2];
+    char resp_esc[RESP_MAX * 2];
+
+    const char *req_json = request;
+    const char *resp_json = response;
+
+    if (request) {
+        const char *p = request;
+        while (*p && isspace((unsigned char)*p)) p++;
+        if (*p != '{' && *p != '[') {
+            json_escape(request, req_esc, sizeof(req_esc));
+            static char req_wrap[REQ_MAX * 2 + 4];
+            snprintf(req_wrap, sizeof(req_wrap), "\"%s\"", req_esc);
+            req_json = req_wrap;
+        }
+    }
+
+    if (response) {
+        const char *p = response;
+        while (*p && isspace((unsigned char)*p)) p++;
+        if (*p != '{' && *p != '[') {
+            json_escape(response, resp_esc, sizeof(resp_esc));
+            static char resp_wrap[RESP_MAX * 2 + 4];
+            snprintf(resp_wrap, sizeof(resp_wrap), "\"%s\"", resp_esc);
+            resp_json = resp_wrap;
+        }
+    }
+
+    fprintf(fp, "{\"ts\":\"%s\",\"request\":%s,\"response\":%s}\n", ts, req_json, resp_json);
     fclose(fp);
 }
 
@@ -1634,6 +2015,11 @@ static void build_legacy_delete_older_than_days(const request_ctx_t *ctx, char *
 
 static void handle_legacy_call_tool(const request_ctx_t *ctx, char *resp, size_t cap)
 {
+    if (is_tool_disabled(ctx->tool)) {
+        build_legacy_tool_error(ctx, resp, cap, "service disabled by configuration");
+        return;
+    }
+
     if (ctx->tool[0] == '\0') {
         build_legacy_tool_error(ctx, resp, cap, "tool is required");
         return;
@@ -1665,6 +2051,11 @@ static void handle_tools_call(const char *req, const request_ctx_t *ctx, char *r
             respond_error(resp, cap, "tools/call", "BAD_ARGUMENTS", "tool is required");
             return;
         }
+    }
+
+    if (is_tool_disabled(tool)) {
+        respond_error(resp, cap, "tools/call", "SERVICE_DISABLED", "service disabled by configuration");
+        return;
     }
 
     if (strcmp(tool, "registry.packages.list") == 0) {
@@ -1725,23 +2116,43 @@ static void build_legacy_notification(const request_ctx_t *ctx,
 static void handle_request(const char *req, const request_ctx_t *ctx, char *resp, size_t cap)
 {
     if (ctx->kind == REQUEST_LEGACY_INITIALIZE) {
+        if (!g_service_cfg.enable_legacy) {
+            respond_error(resp, cap, "unknown", "SERVICE_DISABLED", "legacy service is disabled");
+            return;
+        }
         build_legacy_initialize(ctx, resp, cap);
         return;
     }
     if (ctx->kind == REQUEST_LEGACY_LIST_TOOLS) {
+        if (!g_service_cfg.enable_legacy) {
+            respond_error(resp, cap, "unknown", "SERVICE_DISABLED", "legacy service is disabled");
+            return;
+        }
         build_legacy_list_tools(ctx, resp, cap);
         return;
     }
     if (ctx->kind == REQUEST_LEGACY_CALL_TOOL) {
+        if (!g_service_cfg.enable_legacy) {
+            respond_error(resp, cap, "unknown", "SERVICE_DISABLED", "legacy service is disabled");
+            return;
+        }
         handle_legacy_call_tool(ctx, resp, cap);
         return;
     }
 
     if (ctx->kind == REQUEST_NATIVE_TOOLS_LIST) {
+        if (!g_service_cfg.enable_native) {
+            respond_error(resp, cap, "unknown", "SERVICE_DISABLED", "native tools service is disabled");
+            return;
+        }
         build_tools_list_response(resp, cap);
         return;
     }
     if (ctx->kind == REQUEST_NATIVE_TOOLS_CALL) {
+        if (!g_service_cfg.enable_native) {
+            respond_error(resp, cap, "unknown", "SERVICE_DISABLED", "native tools service is disabled");
+            return;
+        }
         handle_tools_call(req, ctx, resp, cap);
         return;
     }
@@ -1779,6 +2190,8 @@ int main(void)
         perror("getcwd");
         return 1;
     }
+
+    load_service_config();
 
     mkdir("artifacts", 0755);
 
@@ -1822,6 +2235,9 @@ int main(void)
             continue;
         }
 
+        connection_session_t session;
+        memset(&session, 0, sizeof(session));
+
         for (;;) {
             char req[REQ_MAX];
             ssize_t n = recv_line(cfd, req, sizeof(req));
@@ -1832,7 +2248,21 @@ int main(void)
 
             char resp[RESP_MAX];
             if (!parse_request_ctx(req, &ctx)) {
-                respond_error(resp, sizeof(resp), "unknown", "BAD_REQUEST", "Request must be valid JSON object");
+                bool close_after = false;
+                if (!g_service_cfg.enable_ftp) {
+                    respond_error(resp, sizeof(resp), "unknown", "BAD_REQUEST", "Request must be valid JSON object");
+                } else if (handle_ftp_style_command(req, &session, resp, sizeof(resp), &close_after)) {
+                    log_call(req, resp);
+                    if (send_json_line(cfd, resp) != 0) {
+                        request_ctx_free(&ctx);
+                        break;
+                    }
+                    request_ctx_free(&ctx);
+                    if (close_after) break;
+                    continue;
+                } else {
+                    respond_error(resp, sizeof(resp), "unknown", "BAD_REQUEST", "Request must be valid JSON object");
+                }
             } else {
                 if (ctx.kind == REQUEST_LEGACY_CALL_TOOL && strcmp(ctx.tool, "list_files") == 0) {
                     char note[SMALL_BUF * 3];

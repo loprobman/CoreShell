@@ -19,6 +19,8 @@
 static pid_t g_server_pid = -1;
 
 static int recv_line_fd(int fd, char *resp, size_t cap);
+static int start_server(void);
+static void stop_server(void);
 
 static int connect_tcp(void)
 {
@@ -349,6 +351,121 @@ static int test_agent_command_plan(void)
     return fails;
 }
 
+static int test_ftp_style_commands(void)
+{
+    int fd = connect_tcp();
+    if (fd < 0) {
+        fprintf(stderr, "[FAIL] ftp-style connect failed\n");
+        return 1;
+    }
+
+    char resp[BUF_CAP];
+    int fails = 0;
+
+    if (send_request_fd(fd, "USER foo") != 0 || recv_line_fd(fd, resp, sizeof(resp)) != 0) {
+        close(fd);
+        fprintf(stderr, "[FAIL] ftp USER I/O failed\n");
+        return 1;
+    }
+    fails += expect_contains(resp, "230", "ftp USER accepted");
+
+    char dir_name[128];
+    snprintf(dir_name, sizeof(dir_name), "artifacts/ftp_test_%ld", (long)getpid());
+    char cmd[512];
+
+    snprintf(cmd, sizeof(cmd), "MKD %s", dir_name);
+    if (send_request_fd(fd, cmd) != 0 || recv_line_fd(fd, resp, sizeof(resp)) != 0) {
+        close(fd);
+        fprintf(stderr, "[FAIL] ftp MKD I/O failed\n");
+        return 1;
+    }
+    fails += expect_contains(resp, "257", "ftp MKD created");
+
+    if (send_request_fd(fd, cmd) != 0 || recv_line_fd(fd, resp, sizeof(resp)) != 0) {
+        close(fd);
+        fprintf(stderr, "[FAIL] ftp MKD exists I/O failed\n");
+        return 1;
+    }
+    fails += expect_contains(resp, "550", "ftp MKD exists error");
+
+    char file_path[256];
+    snprintf(file_path, sizeof(file_path), "%s/nul.bin", dir_name);
+    snprintf(cmd, sizeof(cmd), "STOR %s AAECAwQF", file_path);
+    if (send_request_fd(fd, cmd) != 0 || recv_line_fd(fd, resp, sizeof(resp)) != 0) {
+        close(fd);
+        fprintf(stderr, "[FAIL] ftp STOR I/O failed\n");
+        return 1;
+    }
+    fails += expect_contains(resp, "226", "ftp STOR success");
+
+    snprintf(cmd, sizeof(cmd), "RETR %s", file_path);
+    if (send_request_fd(fd, cmd) != 0 || recv_line_fd(fd, resp, sizeof(resp)) != 0) {
+        close(fd);
+        fprintf(stderr, "[FAIL] ftp RETR I/O failed\n");
+        return 1;
+    }
+    fails += expect_contains(resp, "150", "ftp RETR response code");
+    fails += expect_contains(resp, "AAECAwQF", "ftp RETR base64 payload");
+
+    if (send_request_fd(fd, "RETR artifacts/ftp_missing.bin") != 0 || recv_line_fd(fd, resp, sizeof(resp)) != 0) {
+        close(fd);
+        fprintf(stderr, "[FAIL] ftp RETR missing I/O failed\n");
+        return 1;
+    }
+    fails += expect_contains(resp, "550", "ftp RETR missing file");
+
+    snprintf(cmd, sizeof(cmd), "LIST %s", dir_name);
+    if (send_request_fd(fd, cmd) != 0 || recv_line_fd(fd, resp, sizeof(resp)) != 0) {
+        close(fd);
+        fprintf(stderr, "[FAIL] ftp LIST I/O failed\n");
+        return 1;
+    }
+    fails += expect_contains(resp, "150", "ftp LIST response code");
+    fails += expect_contains(resp, "nul.bin", "ftp LIST entry");
+
+    if (send_request_fd(fd, "QUIT") != 0 || recv_line_fd(fd, resp, sizeof(resp)) != 0) {
+        close(fd);
+        fprintf(stderr, "[FAIL] ftp QUIT I/O failed\n");
+        return 1;
+    }
+    fails += expect_contains(resp, "221", "ftp QUIT response");
+
+    close(fd);
+    if (fails == 0) fprintf(stdout, "[PASS] ftp-style teaching protocol\n");
+    return fails;
+}
+
+static int test_config_disable_tool(void)
+{
+    stop_server();
+    setenv("CORESH_DISABLED_TOOLS", "rag.docs.search", 1);
+
+    if (start_server() != 0) {
+        fprintf(stderr, "[FAIL] config disable: unable to restart server\n");
+        unsetenv("CORESH_DISABLED_TOOLS");
+        return 1;
+    }
+
+    char resp[BUF_CAP];
+    int fails = 0;
+    if (send_request("{\"type\":\"tools/call\",\"tool\":\"rag.docs.search\",\"arguments\":{\"query\":\"print working directory\"}}", resp, sizeof(resp)) != 0) {
+        fprintf(stderr, "[FAIL] config disable request failed\n");
+        fails += 1;
+    } else {
+        fails += expect_contains(resp, "\"SERVICE_DISABLED\"", "config disable response code");
+    }
+
+    stop_server();
+    unsetenv("CORESH_DISABLED_TOOLS");
+    if (start_server() != 0) {
+        fprintf(stderr, "[FAIL] config disable: unable to restart default server\n");
+        fails += 1;
+    }
+
+    if (fails == 0) fprintf(stdout, "[PASS] config disable tool\n");
+    return fails;
+}
+
 static int wait_for_server_ready(void)
 {
     const int retries = 40;
@@ -414,6 +531,8 @@ int main(void)
     fails += test_rag_docs_search();
     fails += test_rag_command_recommend();
     fails += test_agent_command_plan();
+    fails += test_ftp_style_commands();
+    fails += test_config_disable_tool();
 
     stop_server();
 
