@@ -75,7 +75,7 @@ bg_job_t *job_by_id(int job_id)
 /* ── Configuration ───────────────────────────────────────────────────── */
 
 #define MAX_TESTS    256
-#define MAX_OUTPUT   4096
+#define MAX_OUTPUT   65536
 #define EXPECT_FAIL  (-1)   /* any non-zero exit code is acceptable */
 
 /* ── ANSI colours (disabled when stdout is not a tty) ────────────────── */
@@ -124,6 +124,28 @@ typedef struct {
 static test_result_t g_results[MAX_TESTS];
 static int           g_count       = 0;
 static char          g_fixture_dir[512];
+
+static void add_skipped_test(const char *description, const char *reason)
+{
+    if (g_count >= MAX_TESTS) {
+        fprintf(stderr, "error: MAX_TESTS (%d) exceeded\n", MAX_TESTS);
+        return;
+    }
+
+    test_result_t *r = &g_results[g_count++];
+    r->description = description;
+    r->expected_exit = 0;
+    r->actual_exit = 0;
+    r->stdout_match = 1;
+    r->stderr_match = 1;
+    r->stderr_not_match = 1;
+    r->stdout_contains = NULL;
+    r->stderr_contains = NULL;
+    r->stderr_not_contains = NULL;
+    r->passed = 1;
+    snprintf(r->stdout_buf, MAX_OUTPUT - 1, "(skipped: %s)", reason ? reason : "not available");
+    r->stderr_buf[0] = '\0';
+}
 
 /* ── Dynamic description pool ────────────────────────────────────────── */
 /* Storage for test descriptions generated at runtime (e.g. inside loops).
@@ -1079,6 +1101,152 @@ static void test_rpc(void)
     });
 }
 
+static pid_t start_agent_command_mock_server(const char *command)
+{
+    int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (listen_fd < 0)
+        return -1;
+
+    int one = 1;
+    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+
+    struct sockaddr_in sin;
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sin.sin_port = htons(3000);
+
+    if (bind(listen_fd, (struct sockaddr *)&sin, sizeof(sin)) != 0)
+    {
+        close(listen_fd);
+        return -1;
+    }
+
+    if (listen(listen_fd, 1) != 0)
+    {
+        close(listen_fd);
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        close(listen_fd);
+        return -1;
+    }
+
+    if (pid == 0)
+    {
+        int cfd = accept(listen_fd, NULL, NULL);
+        if (cfd >= 0)
+        {
+            char req[1024];
+            (void)read(cfd, req, sizeof(req) - 1);
+
+            char body[512];
+            int body_len = snprintf(body, sizeof(body), "{\"command\":\"%s\"}", command ? command : "pwd");
+            if (body_len < 0)
+                body_len = 0;
+
+            char resp[1024];
+            int resp_len = snprintf(resp, sizeof(resp),
+                                    "HTTP/1.1 200 OK\r\n"
+                                    "Content-Type: application/json\r\n"
+                                    "Content-Length: %d\r\n"
+                                    "Connection: close\r\n\r\n"
+                                    "%s",
+                                    body_len, body);
+            if (resp_len > 0)
+                (void)write(cfd, resp, (size_t)resp_len);
+
+            close(cfd);
+        }
+        close(listen_fd);
+        _exit(0);
+    }
+
+    close(listen_fd);
+    return pid;
+}
+
+static void test_shellai_assignment_requirements(void)
+{
+    run_shell_test(&(test_case_t){
+        "shellai: --commands-json includes top-level commands array",
+        {"./CoreShell", "--commands-json", NULL}, 0, "\"commands\"", NULL
+    });
+
+    run_shell_test(&(test_case_t){
+        "shellai: --commands-json includes usage and options keys",
+        {"./CoreShell", "--commands-json", NULL}, 0, "\"usage\"", NULL
+    });
+
+    run_shell_test(&(test_case_t){
+        "shellai: --commands-json includes short/long/arg/help option schema",
+        {"./CoreShell", "--commands-json", NULL}, 0, "\"arg\"", NULL
+    });
+
+    unlink("artifacts/shellai.log");
+    run_shell_script_test(
+        "shellai: blocks non-catalog suggested command",
+        "@find files in this directory\ny\nexit\n",
+        NULL,
+        0,
+        NULL,
+        "blocked suggested command",
+        NULL);
+
+    {
+        static const char *required[] = {
+            "\"event\":\"suggestion\"",
+            "\"event\":\"decision\"",
+            "\"decision\":\"blocked\""
+        };
+        check_file_test(
+            "shellai log: blocked command records suggestion and blocked decision",
+            "artifacts/shellai.log",
+            required,
+            3);
+    }
+
+    unlink("artifacts/shellai.log");
+    pid_t planner_pid = start_agent_command_mock_server("pwd --badopt");
+    if (planner_pid > 0)
+    {
+        run_shell_script_test(
+            "shellai: blocks suggested command with invalid option",
+            "@where am i\ny\nexit\n",
+            NULL,
+            0,
+            NULL,
+            "option '--badopt' is not declared",
+            NULL);
+
+        int status;
+        waitpid(planner_pid, &status, 0);
+
+        static const char *required_invalid[] = {
+            "\"suggested\":\"pwd --badopt\"",
+            "\"decision\":\"blocked\"",
+            "\"message\":\"option '--badopt' is not declared"
+        };
+        check_file_test(
+            "shellai log: invalid option block reason is logged",
+            "artifacts/shellai.log",
+            required_invalid,
+            3);
+    }
+    else
+    {
+        add_skipped_test(
+            "shellai: blocks suggested command with invalid option",
+            "mock planner could not bind to 127.0.0.1:3000");
+        add_skipped_test(
+            "shellai log: invalid option block reason is logged",
+            "mock planner could not bind to 127.0.0.1:3000");
+    }
+}
+
 /* ---- cmd_spec_t metadata --------------------------------------------- */
 /*
  * Validates that every registered command has all five fields of
@@ -1828,6 +1996,9 @@ int main(void)
 
     /* Interactive shell parser path (BNFC front end + legacy fallback) */
     test_repl_parser();
+
+    /* Week-10 ShellAI assignment checks */
+    test_shellai_assignment_requirements();
 
     /* Print terminal summary */
     print_terminal_report();

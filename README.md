@@ -501,6 +501,24 @@ Suggested command: df -h
 Run this? (y/n) y
 ```
 
+## Week 10 Submission Quick Reference
+
+For grading-ready verification details, see
+[artifacts/week10_assignment_verification.md](artifacts/week10_assignment_verification.md).
+
+Quick verification commands:
+
+```bash
+make test
+./CoreShell --commands-json | head -40
+```
+
+Expected test summary (from `test_output.log`):
+
+```text
+Results: 182 passed / 0 failed / 182 total (100%)
+```
+
 ---
 
 ## Built-in Commands

@@ -9,6 +9,8 @@
 #include <ctype.h>
 #include <libgen.h>
 #include <pthread.h>
+#include <time.h>
+#include <sys/stat.h>
 #include "Absyn.h"
 #include "Parser.h"
 #include "Printer.h"
@@ -18,6 +20,10 @@
 #define BUFFER_SIZE 1024
 #define MAX_ARGS    64
 #define MAX_PIPE_CMDS 16
+
+/* Forward declaration for helper validation routines. */
+static int parse_command(char *input, char *args[]);
+static int capture_usage_text(const cmd_spec_t *spec, char *usage, size_t usage_size);
 
 /* ── multicall helpers ─────────────────────────────────────────────────── */
 
@@ -40,6 +46,375 @@ static int unknown_command(const char *cmd)
     fprintf(stderr, "CoreShell: unknown command '%s'\n", cmd);
     fprintf(stderr, "Run 'CoreShell' with no arguments to enter the interactive shell.\n");
     return EXIT_FAILURE;
+}
+
+typedef struct
+{
+    int first;
+} command_json_ctx_t;
+
+static int capture_command_help_json(const cmd_spec_t *spec, char *out, size_t out_size)
+{
+    if (out_size == 0)
+        return 0;
+
+    out[0] = '\0';
+
+    FILE *tmp = tmpfile();
+    if (tmp == NULL)
+        return 0;
+
+    fflush(stdout);
+    int saved_stdout = dup(STDOUT_FILENO);
+    if (saved_stdout < 0)
+    {
+        fclose(tmp);
+        return 0;
+    }
+
+    if (dup2(fileno(tmp), STDOUT_FILENO) < 0)
+    {
+        close(saved_stdout);
+        fclose(tmp);
+        return 0;
+    }
+
+    char *argv[] = { (char *)spec->name, "--help-json", NULL };
+    (void)spec->run(2, argv);
+
+    fflush(stdout);
+    (void)dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+
+    rewind(tmp);
+    size_t n = fread(out, 1, out_size - 1, tmp);
+    out[n] = '\0';
+    fclose(tmp);
+
+    return n > 0;
+}
+
+static void extract_usage_line(const char *usage_text, const char *fallback, char *out, size_t out_size)
+{
+    if (out_size == 0)
+        return;
+
+    out[0] = '\0';
+    if (usage_text == NULL)
+    {
+        snprintf(out, out_size, "%s", fallback ? fallback : "");
+        return;
+    }
+
+    const char *usage = strstr(usage_text, "Usage:");
+    if (usage == NULL)
+    {
+        snprintf(out, out_size, "%s", fallback ? fallback : "");
+        return;
+    }
+
+    usage += strlen("Usage:");
+    while (*usage && isspace((unsigned char)*usage))
+        usage++;
+
+    const char *end = usage;
+    while (*end && *end != '\n' && *end != '\r')
+        end++;
+
+    while (end > usage && isspace((unsigned char)end[-1]))
+        end--;
+
+    size_t len = (size_t)(end - usage);
+    if (len >= out_size)
+        len = out_size - 1;
+
+    memcpy(out, usage, len);
+    out[len] = '\0';
+
+    if (out[0] == '\0')
+        snprintf(out, out_size, "%s", fallback ? fallback : "");
+}
+
+static int extract_options_array_json(const char *json, char *out, size_t out_size)
+{
+    if (json == NULL || out_size == 0)
+        return 0;
+
+    out[0] = '\0';
+    const char *key = strstr(json, "\"options\"");
+    if (key == NULL)
+        return 0;
+
+    const char *p = strchr(key, ':');
+    if (p == NULL)
+        return 0;
+    p++;
+
+    while (*p && isspace((unsigned char)*p))
+        p++;
+    if (*p != '[')
+        return 0;
+
+    const char *start = p;
+    int depth = 0;
+    int in_string = 0;
+    int escaped = 0;
+
+    for (; *p; p++)
+    {
+        char c = *p;
+
+        if (in_string)
+        {
+            if (escaped)
+            {
+                escaped = 0;
+                continue;
+            }
+            if (c == '\\')
+            {
+                escaped = 1;
+                continue;
+            }
+            if (c == '"')
+                in_string = 0;
+            continue;
+        }
+
+        if (c == '"')
+        {
+            in_string = 1;
+            continue;
+        }
+
+        if (c == '[')
+        {
+            depth++;
+            continue;
+        }
+
+        if (c == ']')
+        {
+            depth--;
+            if (depth == 0)
+            {
+                size_t len = (size_t)(p - start + 1);
+                if (len >= out_size)
+                    return 0;
+                memcpy(out, start, len);
+                out[len] = '\0';
+                return 1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static void print_commands_json_cb(const cmd_spec_t *spec, void *userdata)
+{
+    command_json_ctx_t *ctx = (command_json_ctx_t *)userdata;
+    char usage_text[8192];
+    char usage_line[2048];
+    char help_json[16384];
+    char options_json[12000];
+
+    if (!capture_usage_text(spec, usage_text, sizeof(usage_text)))
+        usage_text[0] = '\0';
+    extract_usage_line(usage_text, spec->name, usage_line, sizeof(usage_line));
+
+    if (!capture_command_help_json(spec, help_json, sizeof(help_json)) ||
+        !extract_options_array_json(help_json, options_json, sizeof(options_json)))
+    {
+        snprintf(options_json, sizeof(options_json), "[]");
+    }
+
+    if (!ctx->first)
+        printf(",\n");
+
+    printf("    {\"name\": ");
+    cmd_json_str(stdout, spec->name);
+    printf(", \"summary\": ");
+    cmd_json_str(stdout, spec->summary);
+    printf(", \"description\": ");
+    cmd_json_str(stdout, spec->long_help ? spec->long_help : spec->summary);
+    printf(", \"usage\": ");
+    cmd_json_str(stdout, usage_line);
+    printf(", \"options\": %s", options_json);
+    printf("}");
+
+    ctx->first = 0;
+}
+
+static int print_commands_json(void)
+{
+    printf("{\n  \"commands\": [\n");
+    command_json_ctx_t ctx = { .first = 1 };
+    for_each_command(print_commands_json_cb, &ctx);
+    printf("\n  ]\n}\n");
+    return 0;
+}
+
+static void shellai_log_event(const char *event,
+                              const char *query,
+                              const char *suggested,
+                              const char *decision,
+                              int status,
+                              const char *message)
+{
+    if (mkdir("artifacts", 0775) < 0 && errno != EEXIST)
+        return;
+
+    FILE *fp = fopen("artifacts/shellai.log", "a");
+    if (fp == NULL)
+        return;
+
+    char timestamp[64] = "";
+    time_t now = time(NULL);
+    struct tm tm_now;
+    if (now != (time_t)-1 && localtime_r(&now, &tm_now) != NULL)
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S%z", &tm_now);
+
+    fputc('{', fp);
+    fputs("\"ts\":", fp);
+    cmd_json_str(fp, timestamp[0] ? timestamp : NULL);
+    fputs(",\"event\":", fp);
+    cmd_json_str(fp, event);
+    fputs(",\"query\":", fp);
+    cmd_json_str(fp, query);
+    fputs(",\"suggested\":", fp);
+    cmd_json_str(fp, suggested);
+    fputs(",\"decision\":", fp);
+    cmd_json_str(fp, decision);
+    fputs(",\"status\":", fp);
+    if (status >= 0)
+        fprintf(fp, "%d", status);
+    else
+        fputs("null", fp);
+    fputs(",\"message\":", fp);
+    cmd_json_str(fp, message);
+    fputs("}\n", fp);
+
+    fclose(fp);
+}
+
+static int has_forbidden_shell_syntax(const char *line)
+{
+    const char *forbidden = "|&;<>`$(){}[]\\\n\\r";
+    for (const char *p = line; *p; p++)
+    {
+        if (strchr(forbidden, *p) != NULL)
+            return 1;
+    }
+    return 0;
+}
+
+static int capture_usage_text(const cmd_spec_t *spec, char *usage, size_t usage_size)
+{
+    if (usage_size == 0)
+        return 0;
+
+    FILE *fp = tmpfile();
+    if (fp == NULL)
+        return 0;
+
+    spec->print_usage(fp);
+    fflush(fp);
+    rewind(fp);
+
+    size_t n = fread(usage, 1, usage_size - 1, fp);
+    usage[n] = '\0';
+    fclose(fp);
+
+    return 1;
+}
+
+static int usage_mentions_token(const char *usage, const char *token)
+{
+    return usage != NULL && token != NULL && strstr(usage, token) != NULL;
+}
+
+static int validate_option_against_usage(const char *usage, const char *opt)
+{
+    if (strncmp(opt, "--", 2) == 0)
+        return usage_mentions_token(usage, opt);
+
+    if (opt[0] != '-' || opt[1] == '\0')
+        return 0;
+
+    if (opt[2] == '\0')
+        return usage_mentions_token(usage, opt);
+
+    /* Handle clustered short options, e.g. -la => -l and -a */
+    for (size_t i = 1; opt[i] != '\0'; i++)
+    {
+        char one[3] = {'-', opt[i], '\0'};
+        if (!usage_mentions_token(usage, one))
+            return 0;
+    }
+    return 1;
+}
+
+static int validate_suggested_command(const char *suggested, char *reason, size_t reason_size)
+{
+    if (suggested == NULL || suggested[0] == '\0')
+    {
+        snprintf(reason, reason_size, "empty suggestion");
+        return 0;
+    }
+
+    if (has_forbidden_shell_syntax(suggested))
+    {
+        snprintf(reason, reason_size, "contains forbidden shell syntax");
+        return 0;
+    }
+
+    char copy[BUFFER_SIZE];
+    strncpy(copy, suggested, sizeof(copy) - 1);
+    copy[sizeof(copy) - 1] = '\0';
+
+    char *args[MAX_ARGS];
+    int nargs = parse_command(copy, args);
+    if (nargs <= 0 || args[0] == NULL)
+    {
+        snprintf(reason, reason_size, "unable to parse suggested command");
+        return 0;
+    }
+
+    const cmd_spec_t *spec = find_command(args[0]);
+    if (spec == NULL)
+    {
+        const char *base = argv0_basename(args[0]);
+        if (base != NULL)
+            spec = find_command(base);
+    }
+    if (spec == NULL)
+    {
+        snprintf(reason, reason_size, "suggested command is not in CoreShell catalog");
+        return 0;
+    }
+
+    char usage[8192];
+    if (!capture_usage_text(spec, usage, sizeof(usage)))
+    {
+        snprintf(reason, reason_size, "failed to capture command usage");
+        return 0;
+    }
+
+    for (int i = 1; i < nargs; i++)
+    {
+        const char *tok = args[i];
+        if (tok == NULL || tok[0] != '-')
+            continue;
+        if (!validate_option_against_usage(usage, tok))
+        {
+            snprintf(reason, reason_size, "option '%s' is not declared for command '%s'", tok, spec->name);
+            return 0;
+        }
+    }
+
+    snprintf(reason, reason_size, "ok");
+    return 1;
 }
 
 /* Parse common shell syntax through BNFC first, then render it back into a
@@ -1148,20 +1523,17 @@ static int execute_pipeline(char *line)
 /* Execute a suggested shell command after user confirmation. */
 static int execute_suggested_command(const char *command)
 {
-    int status = system(command);
-    if (status == -1)
-    {
-        perror("system");
+    char line[BUFFER_SIZE];
+    char *args[MAX_ARGS];
+
+    strncpy(line, command, sizeof(line) - 1);
+    line[sizeof(line) - 1] = '\0';
+
+    int argc = parse_command(line, args);
+    if (argc <= 0)
         return 1;
-    }
 
-    if (WIFEXITED(status))
-        return WEXITSTATUS(status);
-
-    if (WIFSIGNALED(status))
-        return 128 + WTERMSIG(status);
-
-    return 1;
+    return dispatch_command(argc, args);
 }
 
 /* ── LLM @ handling ────────────────────────────────────────────────────── */
@@ -1262,8 +1634,12 @@ static void handle_llm_line(const char *query)
     if (n == 0)
     {
         fprintf(stderr, "CoreShell: coresh_llm returned empty response\n");
+        shellai_log_event("suggestion_error", query, NULL, "error", -1,
+                          "coresh_llm returned empty response");
         return;
     }
+
+    shellai_log_event("suggestion", query, suggested, "pending", -1, NULL);
 
     /* Display the suggested command and ask for confirmation */
     printf("Suggested command: %s\n", suggested);
@@ -1274,6 +1650,8 @@ static void handle_llm_line(const char *query)
     if (fgets(response, sizeof(response), stdin) == NULL)
     {
         fprintf(stderr, "\nCancelled.\n");
+        shellai_log_event("decision", query, suggested, "cancelled", -1,
+                          "stdin closed while awaiting confirmation");
         return;
     }
 
@@ -1281,12 +1659,20 @@ static void handle_llm_line(const char *query)
     if (response[0] != 'y' && response[0] != 'Y')
     {
         printf("Cancelled.\n");
+        shellai_log_event("decision", query, suggested, "cancelled", -1, NULL);
         return;
     }
 
-    /* Execute the suggested command through the system shell so globbing
-       and external commands behave the way the LLM suggested. */
-    execute_suggested_command(suggested);
+    char validation_reason[256];
+    if (!validate_suggested_command(suggested, validation_reason, sizeof(validation_reason)))
+    {
+        fprintf(stderr, "CoreShell: blocked suggested command (%s)\n", validation_reason);
+        shellai_log_event("decision", query, suggested, "blocked", -1, validation_reason);
+        return;
+    }
+
+    int rc = execute_suggested_command(suggested);
+    shellai_log_event("executed", query, suggested, "executed", rc, NULL);
 }
 
 /* Collect an @ query from argv[1..] for direct command-line invocation. */
@@ -1369,6 +1755,9 @@ int main(int argc, char *argv[])
     /* Mode 2: ./CoreShell <cmd> [args...] */
     if (argc > 1)
     {
+        if (strcmp(argv[1], "--commands-json") == 0)
+            return print_commands_json();
+
         if (argv[1][0] == '@')
         {
             char *query = join_llm_query(argc, argv);
