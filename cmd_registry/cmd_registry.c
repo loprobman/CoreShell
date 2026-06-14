@@ -94,7 +94,16 @@ void cmd_print_help_json(FILE *out, const char *name, const char *summary,
         fprintf(out, ", \"datatype\": ");
         cmd_json_str(out, hdr->datatype);
 
+        fprintf(out, ", \"arg\": ");
+        if (hdr->datatype && hdr->datatype[0])
+            cmd_json_str(out, hdr->datatype);
+        else
+            fputs("null", out);
+
         fprintf(out, ", \"description\": ");
+        cmd_json_str(out, hdr->glossary);
+
+        fprintf(out, ", \"help\": ");
         cmd_json_str(out, hdr->glossary);
 
         fprintf(out, ", \"required\": %s", hdr->mincount > 0 ? "true" : "false");
